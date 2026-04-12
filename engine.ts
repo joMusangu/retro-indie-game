@@ -1356,7 +1356,6 @@ class FightingGameEngine {
         this.ctx.font = "13px 'Arial', sans-serif";
         this.ctx.fillStyle = "#333333";
         this.ctx.textBaseline = "top";
-        this.ctx.fillText("W / S or arrows · Enter / F to confirm · Click a button", cx, panelY + panelH - 36);
         this.ctx.textAlign = "left";
         this.ctx.textBaseline = "alphabetic";
     }
