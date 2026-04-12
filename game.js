@@ -2600,7 +2600,7 @@ class FightingGameEngine {
         this.ctx.textBaseline = "middle";
         this.ctx.font = "bold 20px 'Arial', sans-serif";
         if (isP1) {
-            this.ctx.fillText("Select a fighter to open details  ·  B / Esc: main menu", SCREEN_WIDTH / 2, footerY + 10);
+            this.ctx.fillText("Select a fighter to open details  ·  B / Esc: main menu", SCREEN_WIDTH / 2);
         }
         else {
             this.ctx.fillText("Select a fighter to open details", SCREEN_WIDTH / 2, footerY + 10);
@@ -2950,7 +2950,6 @@ class FightingGameEngine {
         this.ctx.font = "13px 'Arial', sans-serif";
         this.ctx.fillStyle = "#333333";
         this.ctx.textBaseline = "top";
-        this.ctx.fillText("W / S or arrows · Enter / F to confirm · Click a button", cx, panelY + panelH - 36);
         this.ctx.textAlign = "left";
         this.ctx.textBaseline = "alphabetic";
     }
