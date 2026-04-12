@@ -55,7 +55,6 @@ const CHARACTER_PREVIEW_PATHS = {
     "Martial Hero 3": "Martial Hero 3/Preview.png",
     "Medieval Warrior Pack 2": "Medieval Warrior Pack 2/Sprites/Idle.png",
     "Medieval Warrior Pack 3": "Medieval Warrior Pack 3/Preview.gif",
-    "Medieval King Pack 2": "Medieval King Pack 2/Sprites/Idle.png",
     "Huntress": "Huntress/Sprites/Idle.png",
     "Huntress 2": "Huntress 2/Preview.png",
     "Evil Wizard 3": "Evil Wizard 3/preview.png"
@@ -125,17 +124,6 @@ const CHARACTER_SPRITE_PATHS = {
         fall: "Medieval Warrior Pack 3/Sprites/Fall.png",
         getHit: "Medieval Warrior Pack 3/Sprites/Get Hit.png",
         jump: "Medieval Warrior Pack 3/Sprites/Jump.png"
-    },
-    "Medieval King Pack 2": {
-        idle: "Medieval King Pack 2/Sprites/Idle.png",
-        run: "Medieval King Pack 2/Sprites/Run.png",
-        attack1: "Medieval King Pack 2/Sprites/Attack1.png",
-        attack2: "Medieval King Pack 2/Sprites/Attack2.png",
-        attack3: "Medieval King Pack 2/Sprites/Attack3.png",
-        death: "Medieval King Pack 2/Sprites/Death.png",
-        fall: "Medieval King Pack 2/Sprites/Fall.png",
-        getHit: "Medieval King Pack 2/Sprites/Take Hit.png",
-        jump: "Medieval King Pack 2/Sprites/Jump.png"
     },
     "Huntress": {
         idle: "Huntress/Sprites/Idle.png",
@@ -374,7 +362,6 @@ function getArenaDisplayName(index) {
 const ROSTER_NAME_OVERRIDES = {
     "Medieval Warrior Pack 2": "Medieval Warrior",
     "Medieval Warrior Pack 3": "Medieval Warrior 3",
-    "Medieval King Pack 2": "Medieval King",
     "Evil Wizard 3": "Evil Wizard"
 };
 const ROSTER_TUNING = {
@@ -384,13 +371,13 @@ const ROSTER_TUNING = {
     "Martial Hero 3": { baseSpeed: 4, basePower: 10, colorAccent: PALETTE.PASTEL_PURPLE },
     "Medieval Warrior Pack 2": { baseSpeed: 2, basePower: 12, colorAccent: PALETTE.PASTEL_YELLOW },
     "Medieval Warrior Pack 3": { baseSpeed: 3, basePower: 11, colorAccent: PALETTE.PASTEL_ORANGE },
-    "Medieval King Pack 2": { baseSpeed: 2, basePower: 13, colorAccent: PALETTE.PASTEL_BLUE },
     "Huntress": { baseSpeed: 5, basePower: 8, colorAccent: PALETTE.PASTEL_PINK },
     "Huntress 2": { baseSpeed: 4, basePower: 9, colorAccent: PALETTE.PASTEL_GREEN },
     "Evil Wizard 3": { baseSpeed: 3, basePower: 12, colorAccent: PALETTE.PASTEL_PURPLE },
 };
 const DEFAULT_ROSTER_TUNING = { baseSpeed: 3, basePower: 10, colorAccent: PALETTE.PASTEL_BLUE };
 const FIGHTER_ROSTER = AVAILABLE_CHARACTERS.map((spriteKey, idx) => {
+    var _a;
     const tuning = ROSTER_TUNING[spriteKey] || DEFAULT_ROSTER_TUNING;
     return {
         id: `f${idx + 1}`,
@@ -399,6 +386,7 @@ const FIGHTER_ROSTER = AVAILABLE_CHARACTERS.map((spriteKey, idx) => {
         basePower: tuning.basePower,
         colorAccent: tuning.colorAccent,
         spriteKey,
+        sizeScale: (_a = tuning.sizeScale) !== null && _a !== void 0 ? _a : 1,
     };
 });
 // --- Canonical Coordinate System & Collision Framework ---
@@ -473,12 +461,11 @@ class FighterEntity {
         this.groundOffsetPx = 0;
         this.groundOffsetResolved = false;
         this.x = x;
-        // Always align fighter's bottom edge to GROUND_Y using standard height
-        // This ensures all fighters stand on the same ground line
-        this.y = GROUND_Y - STANDARD_FIGHTER_HEIGHT;
-        this.width = STANDARD_FIGHTER_WIDTH;
-        this.height = STANDARD_FIGHTER_HEIGHT;
         this.config = config;
+        const s = config.sizeScale;
+        this.width = Math.round(STANDARD_FIGHTER_WIDTH * s);
+        this.height = Math.round(STANDARD_FIGHTER_HEIGHT * s);
+        this.y = GROUND_Y - this.height;
         this.facingRight = facingRight;
         // Get sprite paths for this character
         const sprites = CHARACTER_SPRITE_PATHS[config.spriteKey];
@@ -1145,18 +1132,15 @@ class FighterEntity {
                 // Normalize all fighters to a consistent on-screen box size.
                 // Sprite frame is fit into the box while preserving source aspect ratio.
                 const frameAspect = frameWidth / Math.max(1, frameHeight);
-                const boxAspect = STANDARD_FIGHTER_WIDTH / STANDARD_FIGHTER_HEIGHT;
-                let drawWidth = STANDARD_FIGHTER_WIDTH;
-                let drawHeight = STANDARD_FIGHTER_HEIGHT;
+                const boxAspect = this.width / Math.max(1, this.height);
+                let drawWidth = this.width;
+                let drawHeight = this.height;
                 if (frameAspect > boxAspect) {
                     drawHeight = Math.round(drawWidth / frameAspect);
                 }
                 else {
                     drawWidth = Math.round(drawHeight * frameAspect);
                 }
-                // Keep collision/movement dimensions constant for all characters.
-                this.width = STANDARD_FIGHTER_WIDTH;
-                this.height = STANDARD_FIGHTER_HEIGHT;
                 // CRITICAL: Always align fighter's bottom edge DIRECTLY on GROUND_Y (the black ground line)
                 const drawX = this.x + Math.round((this.width - drawWidth) / 2);
                 const drawY = GROUND_Y - drawHeight + this.groundOffsetPx + baseToScreen(this.z);
@@ -1299,7 +1283,7 @@ class FighterEntity {
         const frameHeight = idleSprite.height || 1;
         const frameWidth = frameHeight;
         const bottomTrim = this.computeBottomTransparentRows(idleSprite, 0, frameWidth, frameHeight);
-        const offsetScale = STANDARD_FIGHTER_HEIGHT / frameHeight;
+        const offsetScale = this.height / frameHeight;
         // Keep auto-grounding conservative so fighters don't appear to hover.
         this.groundOffsetPx = Math.max(-4, Math.min(16, Math.round(bottomTrim * offsetScale)));
         this.groundOffsetResolved = true;
@@ -2897,8 +2881,6 @@ class FightingGameEngine {
         this.ctx.fillStyle = "#333333";
         this.ctx.textAlign = "center";
         this.ctx.textBaseline = "top";
-        this.ctx.fillText("W / S or arrows to move   ·   Enter or F to confirm   ·   Click a button", SCREEN_WIDTH / 2, footerTop);
-        this.ctx.fillText("ESC to resume (release ESC once after opening pause)   ·   G also resumes", SCREEN_WIDTH / 2, footerTop + 18);
         this.ctx.textAlign = "left";
         this.ctx.textBaseline = "alphabetic";
     }

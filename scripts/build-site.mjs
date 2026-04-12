@@ -19,7 +19,6 @@ const ASSET_DIRS = [
     "Martial Hero 3",
     "Medieval Warrior Pack 2",
     "Medieval Warrior Pack 3",
-    "Medieval King Pack 2",
     "Huntress",
     "Huntress 2",
     "Evil Wizard 3",

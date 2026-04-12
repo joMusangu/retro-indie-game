@@ -79,7 +79,6 @@ const CHARACTER_PREVIEW_PATHS: { [key: string]: string } = {
     "Martial Hero 3": "Martial Hero 3/Preview.png",
     "Medieval Warrior Pack 2": "Medieval Warrior Pack 2/Sprites/Idle.png",
     "Medieval Warrior Pack 3": "Medieval Warrior Pack 3/Preview.gif",
-    "Medieval King Pack 2": "Medieval King Pack 2/Sprites/Idle.png",
     "Huntress": "Huntress/Sprites/Idle.png",
     "Huntress 2": "Huntress 2/Preview.png",
     "Evil Wizard 3": "Evil Wizard 3/preview.png"
@@ -150,17 +149,6 @@ const CHARACTER_SPRITE_PATHS: { [key: string]: CharacterSprites } = {
         fall: "Medieval Warrior Pack 3/Sprites/Fall.png",
         getHit: "Medieval Warrior Pack 3/Sprites/Get Hit.png",
         jump: "Medieval Warrior Pack 3/Sprites/Jump.png"
-    },
-    "Medieval King Pack 2": {
-        idle: "Medieval King Pack 2/Sprites/Idle.png",
-        run: "Medieval King Pack 2/Sprites/Run.png",
-        attack1: "Medieval King Pack 2/Sprites/Attack1.png",
-        attack2: "Medieval King Pack 2/Sprites/Attack2.png",
-        attack3: "Medieval King Pack 2/Sprites/Attack3.png",
-        death: "Medieval King Pack 2/Sprites/Death.png",
-        fall: "Medieval King Pack 2/Sprites/Fall.png",
-        getHit: "Medieval King Pack 2/Sprites/Take Hit.png",
-        jump: "Medieval King Pack 2/Sprites/Jump.png"
     },
     "Huntress": {
         idle: "Huntress/Sprites/Idle.png",
@@ -379,6 +367,8 @@ interface FighterConfig {
     basePower: number;
     colorAccent: string; 
     spriteKey: string; // Key to CHARACTER_SPRITE_PATHS
+    /** 1 = default box; >1 larger hitbox + draw (e.g. bulky characters). */
+    sizeScale: number;
 }
 
 // Fighter States - Enhanced with Ground/Air distinction
@@ -443,24 +433,24 @@ function getArenaDisplayName(index: number): string {
 const ROSTER_NAME_OVERRIDES: Record<string, string> = {
     "Medieval Warrior Pack 2": "Medieval Warrior",
     "Medieval Warrior Pack 3": "Medieval Warrior 3",
-    "Medieval King Pack 2": "Medieval King",
     "Evil Wizard 3": "Evil Wizard"
 };
 
-const ROSTER_TUNING: Record<string, { baseSpeed: number; basePower: number; colorAccent: string }> = {
+type RosterTuning = { baseSpeed: number; basePower: number; colorAccent: string; sizeScale?: number };
+
+const ROSTER_TUNING: Record<string, RosterTuning> = {
     "Fantasy Warrior": { baseSpeed: 3, basePower: 10, colorAccent: PALETTE.PASTEL_BLUE },
     "Martial Hero": { baseSpeed: 4, basePower: 9, colorAccent: PALETTE.PASTEL_PINK },
     "Martial Hero 2": { baseSpeed: 3, basePower: 11, colorAccent: PALETTE.PASTEL_GREEN },
     "Martial Hero 3": { baseSpeed: 4, basePower: 10, colorAccent: PALETTE.PASTEL_PURPLE },
     "Medieval Warrior Pack 2": { baseSpeed: 2, basePower: 12, colorAccent: PALETTE.PASTEL_YELLOW },
     "Medieval Warrior Pack 3": { baseSpeed: 3, basePower: 11, colorAccent: PALETTE.PASTEL_ORANGE },
-    "Medieval King Pack 2": { baseSpeed: 2, basePower: 13, colorAccent: PALETTE.PASTEL_BLUE },
     "Huntress": { baseSpeed: 5, basePower: 8, colorAccent: PALETTE.PASTEL_PINK },
     "Huntress 2": { baseSpeed: 4, basePower: 9, colorAccent: PALETTE.PASTEL_GREEN },
     "Evil Wizard 3": { baseSpeed: 3, basePower: 12, colorAccent: PALETTE.PASTEL_PURPLE },
 };
 
-const DEFAULT_ROSTER_TUNING = { baseSpeed: 3, basePower: 10, colorAccent: PALETTE.PASTEL_BLUE };
+const DEFAULT_ROSTER_TUNING: RosterTuning = { baseSpeed: 3, basePower: 10, colorAccent: PALETTE.PASTEL_BLUE };
 
 const FIGHTER_ROSTER: FighterConfig[] = AVAILABLE_CHARACTERS.map((spriteKey, idx) => {
     const tuning = ROSTER_TUNING[spriteKey] || DEFAULT_ROSTER_TUNING;
@@ -471,6 +461,7 @@ const FIGHTER_ROSTER: FighterConfig[] = AVAILABLE_CHARACTERS.map((spriteKey, idx
         basePower: tuning.basePower,
         colorAccent: tuning.colorAccent,
         spriteKey,
+        sizeScale: tuning.sizeScale ?? 1,
     };
 });
 
@@ -631,12 +622,11 @@ class FighterEntity {
 
     constructor(x: number, config: FighterConfig, facingRight: boolean) {
         this.x = x;
-        // Always align fighter's bottom edge to GROUND_Y using standard height
-        // This ensures all fighters stand on the same ground line
-        this.y = GROUND_Y - STANDARD_FIGHTER_HEIGHT;
-        this.width = STANDARD_FIGHTER_WIDTH;
-        this.height = STANDARD_FIGHTER_HEIGHT;
         this.config = config;
+        const s = config.sizeScale;
+        this.width = Math.round(STANDARD_FIGHTER_WIDTH * s);
+        this.height = Math.round(STANDARD_FIGHTER_HEIGHT * s);
+        this.y = GROUND_Y - this.height;
         this.facingRight = facingRight;
         
         // Get sprite paths for this character
@@ -1351,18 +1341,14 @@ class FighterEntity {
                 // Normalize all fighters to a consistent on-screen box size.
                 // Sprite frame is fit into the box while preserving source aspect ratio.
                 const frameAspect = frameWidth / Math.max(1, frameHeight);
-                const boxAspect = STANDARD_FIGHTER_WIDTH / STANDARD_FIGHTER_HEIGHT;
-                let drawWidth = STANDARD_FIGHTER_WIDTH;
-                let drawHeight = STANDARD_FIGHTER_HEIGHT;
+                const boxAspect = this.width / Math.max(1, this.height);
+                let drawWidth = this.width;
+                let drawHeight = this.height;
                 if (frameAspect > boxAspect) {
                     drawHeight = Math.round(drawWidth / frameAspect);
                 } else {
                     drawWidth = Math.round(drawHeight * frameAspect);
                 }
-
-                // Keep collision/movement dimensions constant for all characters.
-                this.width = STANDARD_FIGHTER_WIDTH;
-                this.height = STANDARD_FIGHTER_HEIGHT;
                 
                 // CRITICAL: Always align fighter's bottom edge DIRECTLY on GROUND_Y (the black ground line)
                 const drawX = this.x + Math.round((this.width - drawWidth) / 2);
@@ -1518,7 +1504,7 @@ class FighterEntity {
         const frameHeight = idleSprite.height || 1;
         const frameWidth = frameHeight;
         const bottomTrim = this.computeBottomTransparentRows(idleSprite, 0, frameWidth, frameHeight);
-        const offsetScale = STANDARD_FIGHTER_HEIGHT / frameHeight;
+        const offsetScale = this.height / frameHeight;
         // Keep auto-grounding conservative so fighters don't appear to hover.
         this.groundOffsetPx = Math.max(-4, Math.min(16, Math.round(bottomTrim * offsetScale)));
         this.groundOffsetResolved = true;
