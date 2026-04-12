@@ -402,6 +402,15 @@ const FIGHTER_ROSTER = AVAILABLE_CHARACTERS.map((spriteKey, idx) => {
     };
 });
 // --- Canonical Coordinate System & Collision Framework ---
+//
+// Matches the usual fighting-game split (2D AABBs — fast overlap tests, same idea as rect-vs-rect in articles):
+// - Hitboxes: damage volumes, only on active frames of an attack (`AttackFrameData.hitboxes`).
+// - Hurtboxes: where this character can be hit; per-frame in attacks, default body box otherwise
+//   (`AttackFrameData.hurtboxes` + `getCurrentFrameCollisionBoxes()`).
+// - Push / “collision” boxes (optional, not wired yet): smaller than hurtbox, keeps characters from
+//   overlapping when you want depth separation — add `CollisionLayer.PUSH` + physics pass later.
+//
+// Boxes live in base space relative to the feet pivot; `transformCollisionBox()` → screen AABB each frame.
 // Collision Layers
 var CollisionLayer;
 (function (CollisionLayer) {
@@ -409,7 +418,8 @@ var CollisionLayer;
     CollisionLayer[CollisionLayer["MID"] = 1] = "MID";
     CollisionLayer[CollisionLayer["LOW"] = 2] = "LOW";
     CollisionLayer[CollisionLayer["THROW"] = 3] = "THROW";
-    CollisionLayer[CollisionLayer["SCAN"] = 4] = "SCAN"; // Detection boxes
+    CollisionLayer[CollisionLayer["SCAN"] = 4] = "SCAN";
+    CollisionLayer[CollisionLayer["PUSH"] = 5] = "PUSH";
 })(CollisionLayer || (CollisionLayer = {}));
 // Helper function to convert base coordinates to screen coordinates
 function baseToScreen(baseValue) {
@@ -439,6 +449,10 @@ class FighterEntity {
         // Cooldowns and frame timers
         this.attackCooldown = 0;
         this.stunTimer = 0;
+        /** Frames of hit stun applied by the last hit (for HUD bar drain). */
+        this.hitStunDisplayFrames = 0;
+        /** Hits landed in the current combo; increments only if defender was already in hit stun. */
+        this.comboCounter = 0;
         this.frameTimer = 0; // Current frame of action
         this.currentAttackType = null;
         this.currentAttackDef = null;
@@ -630,6 +644,29 @@ class FighterEntity {
         }
         this.mirrorX = this.x;
     }
+    /**
+     * True when holding horizontal "away from opponent" only (Street Fighter–style stand guard).
+     * Mutually exclusive directions avoid accidental block when pressing both.
+     */
+    isHoldingAwayFromOpponent(input, opponent) {
+        const myCx = this.x + this.width / 2;
+        const opCx = opponent.x + opponent.width / 2;
+        if (myCx < opCx)
+            return input.left && !input.right;
+        if (myCx > opCx)
+            return input.right && !input.left;
+        return false;
+    }
+    /** Grounded guard: crouch (down) or stand (back / away from opponent). */
+    shouldEnterBlock(input, opponent) {
+        if (!this.isGrounded)
+            return false;
+        if (input.down)
+            return true;
+        if (input.up)
+            return false;
+        return this.isHoldingAwayFromOpponent(input, opponent);
+    }
     update(input, opponent, inputHandler = null) {
         if (this.state === FighterState.DEFEATED) {
             this.updateAnimation();
@@ -640,12 +677,15 @@ class FighterEntity {
         this.applyPhysics();
         // Character mirroring (maintain consistent controls)
         this.updateMirroring(opponent);
-        // Handle Stun
+        // Handle Stun (hit stun: unactionable until timer reaches zero; combo drops when we recover)
         if (this.stunTimer > 0) {
             this.state = FighterState.STUNNED;
             this.stunTimer--;
-            if (this.stunTimer <= 0)
+            if (this.stunTimer <= 0) {
                 this.state = FighterState.IDLE;
+                this.hitStunDisplayFrames = 0;
+                opponent.comboCounter = 0;
+            }
             // Apply friction while stunned
             this.velocityX *= 0.8;
             this.x += this.velocityX;
@@ -681,13 +721,13 @@ class FighterEntity {
         // Cooldown recovery
         if (this.attackCooldown > 0)
             this.attackCooldown--;
-        // --- Blocking Check (must be before movement) ---
-        if (this.isGrounded && input.down) {
+        // --- Blocking (before movement / attacks): crouch guard (down) or stand guard (away from foe) ---
+        if (this.shouldEnterBlock(input, opponent)) {
             this.state = FighterState.BLOCKING;
             this.velocityX = 0;
             this.animFrame++;
             this.updateAnimation();
-            return; // Blocking takes priority, don't process movement or attacks
+            return;
         }
         // --- Jump start ---
         if (this.isGrounded && input.up) {
@@ -902,8 +942,11 @@ class FighterEntity {
         const worldH = baseToScreen(box.height);
         return { x: worldX, y: worldY, w: worldW, h: worldH };
     }
+    /**
+     * Single tight AABB vs sprite box (inset). Handy for debug/UI; **hit resolution uses
+     * `getHurtboxesWorld()`** so defender state matches per-frame hurtboxes when attacking.
+     */
     getBodyHurtboxWorld() {
-        // Tight body volume; vertical must use same feet line as transformCollisionBox (not stale this.y).
         const feetY = this.getFeetWorldY();
         const topY = feetY - this.height;
         const insetX = this.width * 0.2;
@@ -916,7 +959,14 @@ class FighterEntity {
             h: this.height - insetTop - insetBottom
         };
     }
-    // AABB collision check
+    /** Defender hurtboxes this frame in screen space (one or more AABBs — any overlap with a hitbox counts). */
+    getHurtboxesWorld() {
+        const { hurtboxes } = this.getCurrentFrameCollisionBoxes();
+        if (hurtboxes.length === 0)
+            return [this.getBodyHurtboxWorld()];
+        return hurtboxes.map((hb) => this.transformCollisionBox(hb));
+    }
+    /** Axis-aligned rectangle overlap (standard 2D fighting-game hit vs hurt test). */
     checkAABBCollision(box1, box2) {
         return box1.x < box2.x + box2.w &&
             box1.x + box1.w > box2.x &&
@@ -969,27 +1019,27 @@ class FighterEntity {
         if (this.alreadyHitTargets.has(opponent)) {
             return;
         }
-        // Get current frame's attack hitboxes and opponent body volume.
         const { hitboxes } = this.getCurrentFrameCollisionBoxes();
-        const opponentBody = opponent.getBodyHurtboxWorld();
-        // Check each hitbox directly against sprite-aligned opponent body.
+        const defenderHurts = opponent.getHurtboxesWorld();
         for (const hitbox of hitboxes) {
             const worldHitbox = this.transformCollisionBox(hitbox);
-            if (!this.checkAABBCollision(worldHitbox, opponentBody))
-                continue;
-            const overlapLeft = Math.max(worldHitbox.x, opponentBody.x);
-            const overlapTop = Math.max(worldHitbox.y, opponentBody.y);
-            const overlapRight = Math.min(worldHitbox.x + worldHitbox.w, opponentBody.x + opponentBody.w);
-            const overlapBottom = Math.min(worldHitbox.y + worldHitbox.h, opponentBody.y + opponentBody.h);
-            const overlapW = overlapRight - overlapLeft;
-            const overlapH = overlapBottom - overlapTop;
-            if (overlapW <= 0 || overlapH <= 0)
-                continue;
-            const impactX = overlapLeft + overlapW / 2;
-            const impactY = overlapTop + overlapH / 2;
-            this.processHit(opponent, impactX, impactY);
-            this.alreadyHitTargets.add(opponent); // Mark as hit
-            return; // Only one hit per attack
+            for (const hurt of defenderHurts) {
+                if (!this.checkAABBCollision(worldHitbox, hurt))
+                    continue;
+                const overlapLeft = Math.max(worldHitbox.x, hurt.x);
+                const overlapTop = Math.max(worldHitbox.y, hurt.y);
+                const overlapRight = Math.min(worldHitbox.x + worldHitbox.w, hurt.x + hurt.w);
+                const overlapBottom = Math.min(worldHitbox.y + worldHitbox.h, hurt.y + hurt.h);
+                const overlapW = overlapRight - overlapLeft;
+                const overlapH = overlapBottom - overlapTop;
+                if (overlapW <= 0 || overlapH <= 0)
+                    continue;
+                const impactX = overlapLeft + overlapW / 2;
+                const impactY = overlapTop + overlapH / 2;
+                this.processHit(opponent, impactX, impactY);
+                this.alreadyHitTargets.add(opponent);
+                return;
+            }
         }
     }
     processHit(opponent, impactX, impactY) {
@@ -1001,7 +1051,8 @@ class FighterEntity {
         const isBlocking = opponent.state === FighterState.BLOCKING;
         const isFacingAttacker = (opponent.facingRight && this.x > opponent.x) || (!opponent.facingRight && this.x < opponent.x);
         if (isBlocking && isFacingAttacker && attackDef.canBeBlocked) {
-            // BLOCKED
+            // BLOCKED — breaks the attacker's combo string
+            this.comboCounter = 0;
             let blockedDamage = Math.floor(attackDef.damage * 0.2); // 20% chip damage
             let energyGain = Math.floor(attackDef.energyGain * 0.5); // Less energy for blocked hits
             // Finishers can't be fully blocked
@@ -1020,7 +1071,12 @@ class FighterEntity {
             console.log(`${opponent.config.name} blocked the attack!`);
         }
         else {
-            // HIT CONFIRMED
+            // HIT CONFIRMED — combo counts only while defender remains in hit stun
+            const defenderInHitstun = opponent.stunTimer > 0;
+            if (defenderInHitstun)
+                this.comboCounter++;
+            else
+                this.comboCounter = 1;
             const knockbackScreen = baseToScreen(attackDef.knockback);
             const knockbackX = this.facingRight ? knockbackScreen : -knockbackScreen;
             opponent.takeDamage(attackDef.damage, attackDef.stunTime, knockbackX);
@@ -1035,10 +1091,14 @@ class FighterEntity {
         var _a;
         if (this.state === FighterState.DEFEATED)
             return;
-        if (amount > 0)
+        if (amount > 0) {
             (_a = this.onHitTaken) === null || _a === void 0 ? void 0 : _a.call(this);
+            this.comboCounter = 0;
+        }
         this.hp = Math.max(0, this.hp - amount);
         this.stunTimer = stunFrames;
+        if (stunFrames > 0)
+            this.hitStunDisplayFrames = stunFrames;
         this.velocityX = knockbackX;
         // Apply knockback but enforce boundaries immediately
         this.x += this.velocityX;
@@ -1506,7 +1566,11 @@ class AIController {
                 input.left = opponentRight;
                 break;
             case 5 /* AiDecision.BLOCK */:
-                input.down = true;
+                // Stand guard: hold away from opponent (same rule as human back-to-block).
+                if (opponentRight)
+                    input.left = true;
+                else
+                    input.right = true;
                 break;
             case 6 /* AiDecision.IDLE */: /* stand still */ break;
         }
@@ -1533,7 +1597,12 @@ class FightingGameEngine {
         this.p2Wins = 0;
         this.currentRound = 1;
         this.roundEndTimer = 0;
+        /** @deprecated kept for reset; game-over flow uses gameOverBannerTimer */
         this.gameOverTimer = 0;
+        /** While > 0, show winner celebration only; then show end menu. Skip early with Enter. */
+        this.gameOverBannerTimer = 0;
+        this.gameOverMenuIndex = 0;
+        this.gameOverNavCooldown = 0;
         this.mouseX = 0;
         this.mouseY = 0;
         this.mouseClicked = false;
@@ -1592,10 +1661,14 @@ class FightingGameEngine {
         this.fighter1.velocityZ = 0;
         this.fighter1.x = 100;
         this.fighter1.facingRight = true;
+        this.fighter1.comboCounter = 0;
+        this.fighter1.hitStunDisplayFrames = 0;
         this.fighter1.x = Math.max(0, Math.min(SCREEN_WIDTH - this.fighter1.width, this.fighter1.x));
         this.fighter2.hp = this.fighter2.maxHp;
         this.fighter2.energy = 0;
         this.fighter2.state = FighterState.IDLE;
+        this.fighter2.comboCounter = 0;
+        this.fighter2.hitStunDisplayFrames = 0;
         this.fighter2.velocityX = 0;
         this.fighter2.velocityY = 0;
         this.fighter2.velocityZ = 0;
@@ -1619,10 +1692,8 @@ class FightingGameEngine {
                 this.p2Wins++;
             this.roundEndTimer = 180;
             this.gameState = GameState.ROUND_END;
-            if (this.p1Wins >= 2 || this.p2Wins >= 2) {
-                this.gameState = GameState.GAME_OVER;
-                this.gameOverTimer = 300;
-            }
+            if (this.p1Wins >= 2 || this.p2Wins >= 2)
+                this.beginGameOver();
             return;
         }
         if (this.fighter1.state === FighterState.DEFEATED) {
@@ -1637,10 +1708,8 @@ class FightingGameEngine {
             this.roundEndTimer = 180;
             this.gameState = GameState.ROUND_END;
         }
-        if (this.p1Wins >= 2 || this.p2Wins >= 2) {
-            this.gameState = GameState.GAME_OVER;
-            this.gameOverTimer = 300;
-        }
+        if (this.p1Wins >= 2 || this.p2Wins >= 2)
+            this.beginGameOver();
     }
     resetMatch() {
         this.p1Wins = 0;
@@ -1650,6 +1719,14 @@ class FightingGameEngine {
         this.gameOverTimer = 0;
         this.lastRoundWasDraw = false;
         this.roundTimeFrames = this.roundDurationSeconds * FPS;
+    }
+    beginGameOver() {
+        this.gameState = GameState.GAME_OVER;
+        this.gameOverTimer = 0;
+        this.gameOverBannerTimer = 200;
+        this.gameOverMenuIndex = 0;
+        this.gameOverNavCooldown = 0;
+        this.menuCooldown = 25;
     }
     returnToMenu() { this.fighter1 = null; this.fighter2 = null; this.player2Input = null; this.arenaSelection = 0; this.gameState = GameState.MENU; this.menuSelection = 0; this.resetMatch(); }
     start() { setInterval(() => this.gameLoop(), 1000 / FPS); }
@@ -2197,8 +2274,7 @@ class FightingGameEngine {
         if (this.roundEndTimer > 0)
             return;
         if (this.p1Wins >= 2 || this.p2Wins >= 2) {
-            this.gameState = GameState.GAME_OVER;
-            this.gameOverTimer = 300;
+            this.beginGameOver();
         }
         else {
             if (!this.lastRoundWasDraw)
@@ -2206,10 +2282,71 @@ class FightingGameEngine {
             this.startFight();
         }
     }
-    updateGameOver() { this.gameOverTimer--; if (this.player1Input.keys.btnA && this.menuCooldown === 0) {
-        this.returnToMenu();
+    updateGameOver() {
+        if (this.menuCooldown > 0)
+            this.menuCooldown--;
+        if (this.gameOverNavCooldown > 0)
+            this.gameOverNavCooldown--;
+        if (this.gameOverBannerTimer > 0) {
+            this.gameOverBannerTimer--;
+            if (this.menuCooldown === 0 && this.player1Input.wasPressed("btnA"))
+                this.gameOverBannerTimer = 0;
+            return;
+        }
+        const options = 3;
+        const { itemW, itemH, startY, rowPitch } = this.getGameOverMenuLayout();
+        if (this.mouseClicked) {
+            for (let i = 0; i < options; i++) {
+                const y = startY + i * rowPitch;
+                if (this.isMouseInRect((SCREEN_WIDTH - itemW) / 2, y, itemW, itemH)) {
+                    this.gameOverMenuIndex = i;
+                    this.applyGameOverMenuSelection();
+                    this.mouseClicked = false;
+                    return;
+                }
+            }
+            this.mouseClicked = false;
+        }
+        const navUp = this.player1Input.wasPressed("up");
+        const navDown = this.player1Input.wasPressed("down");
+        if (this.gameOverNavCooldown === 0 && (navUp || navDown)) {
+            if (navUp)
+                this.gameOverMenuIndex = (this.gameOverMenuIndex - 1 + options) % options;
+            if (navDown)
+                this.gameOverMenuIndex = (this.gameOverMenuIndex + 1) % options;
+            this.gameOverNavCooldown = 10;
+        }
+        if (this.player1Input.wasPressed("btnA"))
+            this.applyGameOverMenuSelection();
+    }
+    getGameOverMenuLayout() {
+        const panelW = 420;
+        const panelH = 320;
+        const panelX = (SCREEN_WIDTH - panelW) / 2;
+        const panelY = Math.floor(SCREEN_HEIGHT * 0.52);
+        const itemW = 360;
+        const itemH = 46;
+        const gap = 12;
+        const rowPitch = itemH + gap;
+        const titleY = panelY + 36;
+        const startY = panelY + 72;
+        return { panelW, panelH, panelX, panelY, itemW, itemH, rowPitch, titleY, startY, gap };
+    }
+    applyGameOverMenuSelection() {
+        switch (this.gameOverMenuIndex) {
+            case 0:
+                this.restartCurrentMatch();
+                break;
+            case 1:
+                this.resetMatch();
+                this.returnToRoster();
+                break;
+            case 2:
+                this.returnToMenu();
+                break;
+        }
         this.menuCooldown = 20;
-    } }
+    }
     drawBar(x, y, current, max, color) {
         const width = 230, height = 16, fillWidth = Math.max(0, (current / max) * width);
         this.ctx.fillStyle = PALETTE.BACKGROUND_DARK;
@@ -2223,28 +2360,69 @@ class FightingGameEngine {
         this.ctx.strokeRect(x, y, width, height);
     }
     drawUI(f1, f2) {
-        const uiHeight = 80, uiPadding = 20;
+        const uiHeight = 90;
+        const uiPadding = 20;
+        const barW = 230;
+        const stunH = 6;
+        const nameY = uiPadding + 28;
+        const stunY = uiPadding + 36;
+        const hpY = uiPadding + 46;
+        const enY = uiPadding + 66;
         this.ctx.fillStyle = PALETTE.WHITE;
         this.ctx.strokeStyle = PALETTE.OUTLINE;
         this.ctx.lineWidth = 4;
         this.ctx.fillRect(uiPadding, uiPadding, 250, uiHeight);
         this.ctx.strokeRect(uiPadding, uiPadding, 250, uiHeight);
         this.ctx.fillStyle = PALETTE.BLACK;
-        this.ctx.font = "bold 24px 'Arial', sans-serif";
+        this.ctx.font = "bold 22px 'Arial', sans-serif";
         this.ctx.textAlign = "left";
-        this.ctx.fillText(f1.config.name.substring(0, 12), uiPadding + 10, uiPadding + 30);
-        this.drawBar(uiPadding + 10, uiPadding + 40, f1.hp, f1.maxHp, PALETTE.ACCENT_RED);
-        this.drawBar(uiPadding + 10, uiPadding + 60, f1.energy, f1.maxEnergy, PALETTE.ACCENT_GREEN);
+        this.ctx.fillText(f1.config.name.substring(0, 12), uiPadding + 10, nameY);
+        this.ctx.fillStyle = PALETTE.BACKGROUND_DARK;
+        this.ctx.fillRect(uiPadding + 10, stunY, barW, stunH);
+        if (f1.stunTimer > 0 && f1.hitStunDisplayFrames > 0) {
+            const fillW = Math.max(0, (f1.stunTimer / f1.hitStunDisplayFrames) * barW);
+            this.ctx.fillStyle = PALETTE.ACCENT_YELLOW;
+            this.ctx.fillRect(uiPadding + 10, stunY, fillW, stunH);
+        }
+        this.ctx.strokeStyle = PALETTE.OUTLINE;
+        this.ctx.lineWidth = 2;
+        this.ctx.strokeRect(uiPadding + 10, stunY, barW, stunH);
+        this.drawBar(uiPadding + 10, hpY, f1.hp, f1.maxHp, PALETTE.ACCENT_RED);
+        this.drawBar(uiPadding + 10, enY, f1.energy, f1.maxEnergy, PALETTE.ACCENT_GREEN);
         this.ctx.fillStyle = PALETTE.WHITE;
         this.ctx.strokeStyle = PALETTE.OUTLINE;
+        this.ctx.lineWidth = 4;
         this.ctx.fillRect(SCREEN_WIDTH - 250 - uiPadding, uiPadding, 250, uiHeight);
         this.ctx.strokeRect(SCREEN_WIDTH - 250 - uiPadding, uiPadding, 250, uiHeight);
         this.ctx.fillStyle = PALETTE.BLACK;
         this.ctx.textAlign = "right";
-        this.ctx.fillText(f2.config.name.substring(0, 12), SCREEN_WIDTH - uiPadding - 10, uiPadding + 30);
+        this.ctx.fillText(f2.config.name.substring(0, 12), SCREEN_WIDTH - uiPadding - 10, nameY);
         this.ctx.textAlign = "left";
-        this.drawBar(SCREEN_WIDTH - 250 - uiPadding + 10, uiPadding + 40, f2.hp, f2.maxHp, PALETTE.ACCENT_RED);
-        this.drawBar(SCREEN_WIDTH - 250 - uiPadding + 10, uiPadding + 60, f2.energy, f2.maxEnergy, PALETTE.ACCENT_GREEN);
+        this.ctx.fillStyle = PALETTE.BACKGROUND_DARK;
+        const f2stunX = SCREEN_WIDTH - 250 - uiPadding + 10;
+        this.ctx.fillRect(f2stunX, stunY, barW, stunH);
+        if (f2.stunTimer > 0 && f2.hitStunDisplayFrames > 0) {
+            const fillW = Math.max(0, (f2.stunTimer / f2.hitStunDisplayFrames) * barW);
+            this.ctx.fillStyle = PALETTE.ACCENT_YELLOW;
+            this.ctx.fillRect(f2stunX, stunY, fillW, stunH);
+        }
+        this.ctx.strokeStyle = PALETTE.OUTLINE;
+        this.ctx.lineWidth = 2;
+        this.ctx.strokeRect(f2stunX, stunY, barW, stunH);
+        this.drawBar(f2stunX, hpY, f2.hp, f2.maxHp, PALETTE.ACCENT_RED);
+        this.drawBar(f2stunX, enY, f2.energy, f2.maxEnergy, PALETTE.ACCENT_GREEN);
+        this.ctx.font = "bold 17px 'Arial', sans-serif";
+        if (f1.comboCounter >= 2) {
+            this.ctx.fillStyle = PALETTE.ACCENT_YELLOW;
+            this.ctx.textAlign = "left";
+            this.ctx.fillText(`${f1.comboCounter}-HIT COMBO`, uiPadding + 10, uiPadding + uiHeight + 14);
+        }
+        if (f2.comboCounter >= 2) {
+            this.ctx.fillStyle = PALETTE.ACCENT_YELLOW;
+            this.ctx.textAlign = "right";
+            this.ctx.fillText(`${f2.comboCounter}-HIT COMBO`, SCREEN_WIDTH - uiPadding - 10, uiPadding + uiHeight + 14);
+        }
+        this.ctx.textAlign = "left";
         // Best-of-3 round tracker (3 pips per side, green for won rounds)
         const pipW = 22;
         const pipH = 12;
@@ -2658,8 +2836,8 @@ class FightingGameEngine {
         this.ctx.textAlign = "left";
         this.ctx.textBaseline = "alphabetic";
     }
-    drawFighting() {
-        // Slight arena zoom so fighters feel closer/larger in-frame.
+    /** Arena, ground line, and both fighters (no HUD). */
+    drawArenaGroundAndFighters() {
         this.drawArenaBackground(-24, -30, SCREEN_WIDTH + 48, SCREEN_HEIGHT + 60);
         const groundGradient = this.ctx.createLinearGradient(0, GROUND_Y, 0, SCREEN_HEIGHT);
         groundGradient.addColorStop(0, PALETTE.GROUND);
@@ -2677,8 +2855,12 @@ class FightingGameEngine {
         if (this.fighter1 && this.fighter2) {
             this.fighter2.draw(this.ctx);
             this.fighter1.draw(this.ctx);
-            this.drawUI(this.fighter1, this.fighter2);
         }
+    }
+    drawFighting() {
+        this.drawArenaGroundAndFighters();
+        if (this.fighter1 && this.fighter2)
+            this.drawUI(this.fighter1, this.fighter2);
     }
     drawPaused() {
         this.ctx.fillStyle = "rgba(0,0,0,0.72)";
@@ -2715,6 +2897,8 @@ class FightingGameEngine {
         this.ctx.fillStyle = "#333333";
         this.ctx.textAlign = "center";
         this.ctx.textBaseline = "top";
+        this.ctx.fillText("W / S or arrows to move   ·   Enter or F to confirm   ·   Click a button", SCREEN_WIDTH / 2, footerTop);
+        this.ctx.fillText("ESC to resume (release ESC once after opening pause)   ·   G also resumes", SCREEN_WIDTH / 2, footerTop + 18);
         this.ctx.textAlign = "left";
         this.ctx.textBaseline = "alphabetic";
     }
@@ -2744,8 +2928,82 @@ class FightingGameEngine {
         }
     }
     drawGameOver() {
-        this.ctx.fillStyle = "rgba(0,0,0,0.7)";
+        if (!this.fighter1 || !this.fighter2) {
+            this.ctx.fillStyle = "rgba(0,0,0,0.85)";
+            this.ctx.fillRect(0, 0, SCREEN_WIDTH, SCREEN_HEIGHT);
+            return;
+        }
+        this.drawArenaGroundAndFighters();
+        const p1Won = this.p1Wins >= 2;
+        const winner = p1Won ? this.fighter1 : this.fighter2;
+        const winTitle = p1Won
+            ? (this.gameMode === GameMode.OneVsOneAI ? "YOU WIN!" : "PLAYER 1 WINS")
+            : (this.gameMode === GameMode.OneVsOneAI ? "CPU WINS" : "PLAYER 2 WINS");
+        const winSubtitle = `Winner — ${winner.config.name}`;
+        const cx = SCREEN_WIDTH / 2;
+        const bannerY = 108;
+        const overlayAlpha = this.gameOverBannerTimer > 0 ? 0.42 : 0.58;
+        this.ctx.fillStyle = `rgba(0,0,0,${overlayAlpha})`;
         this.ctx.fillRect(0, 0, SCREEN_WIDTH, SCREEN_HEIGHT);
+        this.ctx.textAlign = "center";
+        this.ctx.textBaseline = "middle";
+        this.ctx.font = "bold 52px 'Arial', sans-serif";
+        this.ctx.strokeStyle = PALETTE.OUTLINE;
+        this.ctx.lineWidth = 8;
+        this.ctx.strokeText(winTitle, cx, bannerY);
+        this.ctx.fillStyle = PALETTE.WHITE;
+        this.ctx.fillText(winTitle, cx, bannerY);
+        this.ctx.font = "bold 24px 'Arial', sans-serif";
+        this.ctx.strokeStyle = PALETTE.OUTLINE;
+        this.ctx.lineWidth = 4;
+        this.ctx.strokeText(winSubtitle, cx, bannerY + 52);
+        this.ctx.fillStyle = PALETTE.PASTEL_YELLOW;
+        this.ctx.fillText(winSubtitle, cx, bannerY + 52);
+        if (this.gameOverBannerTimer > 0) {
+            this.ctx.font = "18px 'Arial', sans-serif";
+            this.ctx.fillStyle = "rgba(255,255,255,0.95)";
+            this.ctx.strokeStyle = PALETTE.OUTLINE;
+            this.ctx.lineWidth = 3;
+            const hint = "Press Enter / F to continue";
+            this.ctx.strokeText(hint, cx, SCREEN_HEIGHT - 56);
+            this.ctx.fillText(hint, cx, SCREEN_HEIGHT - 56);
+            this.ctx.textAlign = "left";
+            this.ctx.textBaseline = "alphabetic";
+            return;
+        }
+        const { panelW, panelH, panelX, panelY, itemW, itemH, rowPitch, titleY, startY } = this.getGameOverMenuLayout();
+        const options = ["Restart match", "Change character", "Main menu"];
+        this.ctx.fillStyle = PALETTE.WHITE;
+        this.ctx.strokeStyle = PALETTE.OUTLINE;
+        this.ctx.lineWidth = 4;
+        this.ctx.fillRect(panelX, panelY, panelW, panelH);
+        this.ctx.strokeRect(panelX, panelY, panelW, panelH);
+        this.ctx.fillStyle = PALETTE.BLACK;
+        this.ctx.font = "bold 26px 'Arial', sans-serif";
+        this.ctx.textAlign = "center";
+        this.ctx.textBaseline = "middle";
+        this.ctx.fillText("What's next?", cx, titleY);
+        const borderW = 3;
+        for (let i = 0; i < options.length; i++) {
+            const x = (SCREEN_WIDTH - itemW) / 2;
+            const y = startY + i * rowPitch;
+            const over = this.isMouseInRect(x, y, itemW, itemH);
+            const selected = this.gameOverMenuIndex === i;
+            this.ctx.fillStyle = selected || over ? PALETTE.PASTEL_BLUE : PALETTE.WHITE;
+            this.ctx.strokeStyle = PALETTE.OUTLINE;
+            this.ctx.lineWidth = borderW;
+            this.ctx.fillRect(x, y, itemW, itemH);
+            this.ctx.strokeRect(x, y, itemW, itemH);
+            this.ctx.fillStyle = PALETTE.BLACK;
+            this.ctx.font = "bold 18px 'Arial', sans-serif";
+            this.ctx.fillText(options[i], cx, y + itemH / 2);
+        }
+        this.ctx.font = "13px 'Arial', sans-serif";
+        this.ctx.fillStyle = "#333333";
+        this.ctx.textBaseline = "top";
+        this.ctx.fillText("W / S or arrows · Enter / F to confirm · Click a button", cx, panelY + panelH - 36);
+        this.ctx.textAlign = "left";
+        this.ctx.textBaseline = "alphabetic";
     }
 }
 const game = new FightingGameEngine();

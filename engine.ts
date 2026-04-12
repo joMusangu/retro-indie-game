@@ -23,7 +23,12 @@ class FightingGameEngine {
     p2Wins: number = 0;
     currentRound: number = 1;
     roundEndTimer: number = 0;
+    /** @deprecated kept for reset; game-over flow uses gameOverBannerTimer */
     gameOverTimer: number = 0;
+    /** While > 0, show winner celebration only; then show end menu. Skip early with Enter. */
+    gameOverBannerTimer: number = 0;
+    gameOverMenuIndex: number = 0;
+    private gameOverNavCooldown: number = 0;
     mouseX: number = 0;
     mouseY: number = 0;
     mouseClicked: boolean = false;
@@ -82,10 +87,14 @@ class FightingGameEngine {
         this.fighter1.velocityZ = 0;
         this.fighter1.x = 100;
         this.fighter1.facingRight = true;
+        this.fighter1.comboCounter = 0;
+        this.fighter1.hitStunDisplayFrames = 0;
         this.fighter1.x = Math.max(0, Math.min(SCREEN_WIDTH - this.fighter1.width, this.fighter1.x));
         this.fighter2.hp = this.fighter2.maxHp;
         this.fighter2.energy = 0;
         this.fighter2.state = FighterState.IDLE;
+        this.fighter2.comboCounter = 0;
+        this.fighter2.hitStunDisplayFrames = 0;
         this.fighter2.velocityX = 0;
         this.fighter2.velocityY = 0;
         this.fighter2.velocityZ = 0;
@@ -106,7 +115,7 @@ class FightingGameEngine {
             else if (p2DamageTaken < p1DamageTaken) this.p2Wins++;
             this.roundEndTimer = 180;
             this.gameState = GameState.ROUND_END;
-            if (this.p1Wins >= 2 || this.p2Wins >= 2) { this.gameState = GameState.GAME_OVER; this.gameOverTimer = 300; }
+            if (this.p1Wins >= 2 || this.p2Wins >= 2) this.beginGameOver();
             return;
         }
         if (this.fighter1.state === FighterState.DEFEATED) {
@@ -116,7 +125,7 @@ class FightingGameEngine {
             this.lastRoundWasDraw = false;
             this.p1Wins++; this.roundEndTimer = 180; this.gameState = GameState.ROUND_END;
         }
-        if (this.p1Wins >= 2 || this.p2Wins >= 2) { this.gameState = GameState.GAME_OVER; this.gameOverTimer = 300; }
+        if (this.p1Wins >= 2 || this.p2Wins >= 2) this.beginGameOver();
     }
 
     resetMatch() {
@@ -128,6 +137,16 @@ class FightingGameEngine {
         this.lastRoundWasDraw = false;
         this.roundTimeFrames = this.roundDurationSeconds * FPS;
     }
+
+    private beginGameOver() {
+        this.gameState = GameState.GAME_OVER;
+        this.gameOverTimer = 0;
+        this.gameOverBannerTimer = 200;
+        this.gameOverMenuIndex = 0;
+        this.gameOverNavCooldown = 0;
+        this.menuCooldown = 25;
+    }
+
     returnToMenu() { this.fighter1 = null; this.fighter2 = null; this.player2Input = null; this.arenaSelection = 0; this.gameState = GameState.MENU; this.menuSelection = 0; this.resetMatch(); }
     start() { setInterval(() => this.gameLoop(), 1000 / FPS); }
     gameLoop() { this.update(); this.draw(); }
@@ -584,14 +603,78 @@ class FightingGameEngine {
         this.roundEndTimer--;
         if (this.roundEndTimer > 0) return;
         if (this.p1Wins >= 2 || this.p2Wins >= 2) {
-            this.gameState = GameState.GAME_OVER;
-            this.gameOverTimer = 300;
+            this.beginGameOver();
         } else {
             if (!this.lastRoundWasDraw) this.currentRound++;
             this.startFight();
         }
     }
-    updateGameOver() { this.gameOverTimer--; if (this.player1Input.keys.btnA && this.menuCooldown === 0) { this.returnToMenu(); this.menuCooldown = 20; } }
+    updateGameOver() {
+        if (this.menuCooldown > 0) this.menuCooldown--;
+        if (this.gameOverNavCooldown > 0) this.gameOverNavCooldown--;
+
+        if (this.gameOverBannerTimer > 0) {
+            this.gameOverBannerTimer--;
+            if (this.menuCooldown === 0 && this.player1Input.wasPressed("btnA")) this.gameOverBannerTimer = 0;
+            return;
+        }
+
+        const options = 3;
+        const { itemW, itemH, startY, rowPitch } = this.getGameOverMenuLayout();
+
+        if (this.mouseClicked) {
+            for (let i = 0; i < options; i++) {
+                const y = startY + i * rowPitch;
+                if (this.isMouseInRect((SCREEN_WIDTH - itemW) / 2, y, itemW, itemH)) {
+                    this.gameOverMenuIndex = i;
+                    this.applyGameOverMenuSelection();
+                    this.mouseClicked = false;
+                    return;
+                }
+            }
+            this.mouseClicked = false;
+        }
+
+        const navUp = this.player1Input.wasPressed("up");
+        const navDown = this.player1Input.wasPressed("down");
+        if (this.gameOverNavCooldown === 0 && (navUp || navDown)) {
+            if (navUp) this.gameOverMenuIndex = (this.gameOverMenuIndex - 1 + options) % options;
+            if (navDown) this.gameOverMenuIndex = (this.gameOverMenuIndex + 1) % options;
+            this.gameOverNavCooldown = 10;
+        }
+
+        if (this.player1Input.wasPressed("btnA")) this.applyGameOverMenuSelection();
+    }
+
+    private getGameOverMenuLayout() {
+        const panelW = 420;
+        const panelH = 320;
+        const panelX = (SCREEN_WIDTH - panelW) / 2;
+        const panelY = Math.floor(SCREEN_HEIGHT * 0.52);
+        const itemW = 360;
+        const itemH = 46;
+        const gap = 12;
+        const rowPitch = itemH + gap;
+        const titleY = panelY + 36;
+        const startY = panelY + 72;
+        return { panelW, panelH, panelX, panelY, itemW, itemH, rowPitch, titleY, startY, gap };
+    }
+
+    private applyGameOverMenuSelection() {
+        switch (this.gameOverMenuIndex) {
+            case 0:
+                this.restartCurrentMatch();
+                break;
+            case 1:
+                this.resetMatch();
+                this.returnToRoster();
+                break;
+            case 2:
+                this.returnToMenu();
+                break;
+        }
+        this.menuCooldown = 20;
+    }
 
     drawBar(x: number, y: number, current: number, max: number, color: string) {
         const width = 230, height = 16, fillWidth = Math.max(0, (current / max) * width);
@@ -604,21 +687,62 @@ class FightingGameEngine {
     }
 
     drawUI(f1: FighterEntity, f2: FighterEntity) {
-        const uiHeight = 80, uiPadding = 20;
+        const uiHeight = 90;
+        const uiPadding = 20;
+        const barW = 230;
+        const stunH = 6;
+        const nameY = uiPadding + 28;
+        const stunY = uiPadding + 36;
+        const hpY = uiPadding + 46;
+        const enY = uiPadding + 66;
         this.ctx.fillStyle = PALETTE.WHITE; this.ctx.strokeStyle = PALETTE.OUTLINE; this.ctx.lineWidth = 4;
         this.ctx.fillRect(uiPadding, uiPadding, 250, uiHeight); this.ctx.strokeRect(uiPadding, uiPadding, 250, uiHeight);
-        this.ctx.fillStyle = PALETTE.BLACK; this.ctx.font = "bold 24px 'Arial', sans-serif"; this.ctx.textAlign = "left";
-        this.ctx.fillText(f1.config.name.substring(0, 12), uiPadding + 10, uiPadding + 30);
-        this.drawBar(uiPadding + 10, uiPadding + 40, f1.hp, f1.maxHp, PALETTE.ACCENT_RED);
-        this.drawBar(uiPadding + 10, uiPadding + 60, f1.energy, f1.maxEnergy, PALETTE.ACCENT_GREEN);
-        this.ctx.fillStyle = PALETTE.WHITE; this.ctx.strokeStyle = PALETTE.OUTLINE;
+        this.ctx.fillStyle = PALETTE.BLACK; this.ctx.font = "bold 22px 'Arial', sans-serif"; this.ctx.textAlign = "left";
+        this.ctx.fillText(f1.config.name.substring(0, 12), uiPadding + 10, nameY);
+        this.ctx.fillStyle = PALETTE.BACKGROUND_DARK;
+        this.ctx.fillRect(uiPadding + 10, stunY, barW, stunH);
+        if (f1.stunTimer > 0 && f1.hitStunDisplayFrames > 0) {
+            const fillW = Math.max(0, (f1.stunTimer / f1.hitStunDisplayFrames) * barW);
+            this.ctx.fillStyle = PALETTE.ACCENT_YELLOW;
+            this.ctx.fillRect(uiPadding + 10, stunY, fillW, stunH);
+        }
+        this.ctx.strokeStyle = PALETTE.OUTLINE;
+        this.ctx.lineWidth = 2;
+        this.ctx.strokeRect(uiPadding + 10, stunY, barW, stunH);
+        this.drawBar(uiPadding + 10, hpY, f1.hp, f1.maxHp, PALETTE.ACCENT_RED);
+        this.drawBar(uiPadding + 10, enY, f1.energy, f1.maxEnergy, PALETTE.ACCENT_GREEN);
+        this.ctx.fillStyle = PALETTE.WHITE; this.ctx.strokeStyle = PALETTE.OUTLINE; this.ctx.lineWidth = 4;
         this.ctx.fillRect(SCREEN_WIDTH - 250 - uiPadding, uiPadding, 250, uiHeight);
         this.ctx.strokeRect(SCREEN_WIDTH - 250 - uiPadding, uiPadding, 250, uiHeight);
         this.ctx.fillStyle = PALETTE.BLACK; this.ctx.textAlign = "right";
-        this.ctx.fillText(f2.config.name.substring(0, 12), SCREEN_WIDTH - uiPadding - 10, uiPadding + 30);
+        this.ctx.fillText(f2.config.name.substring(0, 12), SCREEN_WIDTH - uiPadding - 10, nameY);
         this.ctx.textAlign = "left";
-        this.drawBar(SCREEN_WIDTH - 250 - uiPadding + 10, uiPadding + 40, f2.hp, f2.maxHp, PALETTE.ACCENT_RED);
-        this.drawBar(SCREEN_WIDTH - 250 - uiPadding + 10, uiPadding + 60, f2.energy, f2.maxEnergy, PALETTE.ACCENT_GREEN);
+        this.ctx.fillStyle = PALETTE.BACKGROUND_DARK;
+        const f2stunX = SCREEN_WIDTH - 250 - uiPadding + 10;
+        this.ctx.fillRect(f2stunX, stunY, barW, stunH);
+        if (f2.stunTimer > 0 && f2.hitStunDisplayFrames > 0) {
+            const fillW = Math.max(0, (f2.stunTimer / f2.hitStunDisplayFrames) * barW);
+            this.ctx.fillStyle = PALETTE.ACCENT_YELLOW;
+            this.ctx.fillRect(f2stunX, stunY, fillW, stunH);
+        }
+        this.ctx.strokeStyle = PALETTE.OUTLINE;
+        this.ctx.lineWidth = 2;
+        this.ctx.strokeRect(f2stunX, stunY, barW, stunH);
+        this.drawBar(f2stunX, hpY, f2.hp, f2.maxHp, PALETTE.ACCENT_RED);
+        this.drawBar(f2stunX, enY, f2.energy, f2.maxEnergy, PALETTE.ACCENT_GREEN);
+
+        this.ctx.font = "bold 17px 'Arial', sans-serif";
+        if (f1.comboCounter >= 2) {
+            this.ctx.fillStyle = PALETTE.ACCENT_YELLOW;
+            this.ctx.textAlign = "left";
+            this.ctx.fillText(`${f1.comboCounter}-HIT COMBO`, uiPadding + 10, uiPadding + uiHeight + 14);
+        }
+        if (f2.comboCounter >= 2) {
+            this.ctx.fillStyle = PALETTE.ACCENT_YELLOW;
+            this.ctx.textAlign = "right";
+            this.ctx.fillText(`${f2.comboCounter}-HIT COMBO`, SCREEN_WIDTH - uiPadding - 10, uiPadding + uiHeight + 14);
+        }
+        this.ctx.textAlign = "left";
 
         // Best-of-3 round tracker (3 pips per side, green for won rounds)
         const pipW = 22;
@@ -1054,8 +1178,8 @@ class FightingGameEngine {
         this.ctx.textBaseline = "alphabetic";
     }
 
-    drawFighting() {
-        // Slight arena zoom so fighters feel closer/larger in-frame.
+    /** Arena, ground line, and both fighters (no HUD). */
+    private drawArenaGroundAndFighters() {
         this.drawArenaBackground(-24, -30, SCREEN_WIDTH + 48, SCREEN_HEIGHT + 60);
         const groundGradient = this.ctx.createLinearGradient(0, GROUND_Y, 0, SCREEN_HEIGHT);
         groundGradient.addColorStop(0, PALETTE.GROUND);
@@ -1073,8 +1197,12 @@ class FightingGameEngine {
         if (this.fighter1 && this.fighter2) {
             this.fighter2.draw(this.ctx);
             this.fighter1.draw(this.ctx);
-            this.drawUI(this.fighter1, this.fighter2);
         }
+    }
+
+    drawFighting() {
+        this.drawArenaGroundAndFighters();
+        if (this.fighter1 && this.fighter2) this.drawUI(this.fighter1, this.fighter2);
     }
 
     drawPaused() {
@@ -1148,8 +1276,92 @@ class FightingGameEngine {
         }
     }
     drawGameOver() {
-        this.ctx.fillStyle = "rgba(0,0,0,0.7)";
+        if (!this.fighter1 || !this.fighter2) {
+            this.ctx.fillStyle = "rgba(0,0,0,0.85)";
+            this.ctx.fillRect(0, 0, SCREEN_WIDTH, SCREEN_HEIGHT);
+            return;
+        }
+
+        this.drawArenaGroundAndFighters();
+
+        const p1Won = this.p1Wins >= 2;
+        const winner = p1Won ? this.fighter1 : this.fighter2;
+        const winTitle = p1Won
+            ? (this.gameMode === GameMode.OneVsOneAI ? "YOU WIN!" : "PLAYER 1 WINS")
+            : (this.gameMode === GameMode.OneVsOneAI ? "CPU WINS" : "PLAYER 2 WINS");
+        const winSubtitle = `Winner — ${winner.config.name}`;
+        const cx = SCREEN_WIDTH / 2;
+        const bannerY = 108;
+
+        const overlayAlpha = this.gameOverBannerTimer > 0 ? 0.42 : 0.58;
+        this.ctx.fillStyle = `rgba(0,0,0,${overlayAlpha})`;
         this.ctx.fillRect(0, 0, SCREEN_WIDTH, SCREEN_HEIGHT);
+
+        this.ctx.textAlign = "center";
+        this.ctx.textBaseline = "middle";
+        this.ctx.font = "bold 52px 'Arial', sans-serif";
+        this.ctx.strokeStyle = PALETTE.OUTLINE;
+        this.ctx.lineWidth = 8;
+        this.ctx.strokeText(winTitle, cx, bannerY);
+        this.ctx.fillStyle = PALETTE.WHITE;
+        this.ctx.fillText(winTitle, cx, bannerY);
+        this.ctx.font = "bold 24px 'Arial', sans-serif";
+        this.ctx.strokeStyle = PALETTE.OUTLINE;
+        this.ctx.lineWidth = 4;
+        this.ctx.strokeText(winSubtitle, cx, bannerY + 52);
+        this.ctx.fillStyle = PALETTE.PASTEL_YELLOW;
+        this.ctx.fillText(winSubtitle, cx, bannerY + 52);
+
+        if (this.gameOverBannerTimer > 0) {
+            this.ctx.font = "18px 'Arial', sans-serif";
+            this.ctx.fillStyle = "rgba(255,255,255,0.95)";
+            this.ctx.strokeStyle = PALETTE.OUTLINE;
+            this.ctx.lineWidth = 3;
+            const hint = "Press Enter / F to continue";
+            this.ctx.strokeText(hint, cx, SCREEN_HEIGHT - 56);
+            this.ctx.fillText(hint, cx, SCREEN_HEIGHT - 56);
+            this.ctx.textAlign = "left";
+            this.ctx.textBaseline = "alphabetic";
+            return;
+        }
+
+        const { panelW, panelH, panelX, panelY, itemW, itemH, rowPitch, titleY, startY } = this.getGameOverMenuLayout();
+        const options = ["Restart match", "Change character", "Main menu"];
+
+        this.ctx.fillStyle = PALETTE.WHITE;
+        this.ctx.strokeStyle = PALETTE.OUTLINE;
+        this.ctx.lineWidth = 4;
+        this.ctx.fillRect(panelX, panelY, panelW, panelH);
+        this.ctx.strokeRect(panelX, panelY, panelW, panelH);
+
+        this.ctx.fillStyle = PALETTE.BLACK;
+        this.ctx.font = "bold 26px 'Arial', sans-serif";
+        this.ctx.textAlign = "center";
+        this.ctx.textBaseline = "middle";
+        this.ctx.fillText("What's next?", cx, titleY);
+
+        const borderW = 3;
+        for (let i = 0; i < options.length; i++) {
+            const x = (SCREEN_WIDTH - itemW) / 2;
+            const y = startY + i * rowPitch;
+            const over = this.isMouseInRect(x, y, itemW, itemH);
+            const selected = this.gameOverMenuIndex === i;
+            this.ctx.fillStyle = selected || over ? PALETTE.PASTEL_BLUE : PALETTE.WHITE;
+            this.ctx.strokeStyle = PALETTE.OUTLINE;
+            this.ctx.lineWidth = borderW;
+            this.ctx.fillRect(x, y, itemW, itemH);
+            this.ctx.strokeRect(x, y, itemW, itemH);
+            this.ctx.fillStyle = PALETTE.BLACK;
+            this.ctx.font = "bold 18px 'Arial', sans-serif";
+            this.ctx.fillText(options[i], cx, y + itemH / 2);
+        }
+
+        this.ctx.font = "13px 'Arial', sans-serif";
+        this.ctx.fillStyle = "#333333";
+        this.ctx.textBaseline = "top";
+        this.ctx.fillText("W / S or arrows · Enter / F to confirm · Click a button", cx, panelY + panelH - 36);
+        this.ctx.textAlign = "left";
+        this.ctx.textBaseline = "alphabetic";
     }
 }
 

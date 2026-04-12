@@ -488,6 +488,15 @@ interface HitEffect {
 }
 
 // --- Canonical Coordinate System & Collision Framework ---
+//
+// Matches the usual fighting-game split (2D AABBs — fast overlap tests, same idea as rect-vs-rect in articles):
+// - Hitboxes: damage volumes, only on active frames of an attack (`AttackFrameData.hitboxes`).
+// - Hurtboxes: where this character can be hit; per-frame in attacks, default body box otherwise
+//   (`AttackFrameData.hurtboxes` + `getCurrentFrameCollisionBoxes()`).
+// - Push / “collision” boxes (optional, not wired yet): smaller than hurtbox, keeps characters from
+//   overlapping when you want depth separation — add `CollisionLayer.PUSH` + physics pass later.
+//
+// Boxes live in base space relative to the feet pivot; `transformCollisionBox()` → screen AABB each frame.
 
 // Collision Layers
 enum CollisionLayer {
@@ -495,7 +504,8 @@ enum CollisionLayer {
     MID = 1,     // Normal attacks
     LOW = 2,     // Low attacks
     THROW = 3,   // Throws/grabs
-    SCAN = 4     // Detection boxes
+    SCAN = 4,    // Hurt / probe layers (and default body hurtboxes in generated data)
+    PUSH = 5,    // Reserved for future pushbox vs pushbox (article “stay away from me” boxes)
 }
 
 // Hitbox/Hurtbox in base coordinates (relative to fighter pivot at feet)
@@ -575,6 +585,10 @@ class FighterEntity {
     // Cooldowns and frame timers
     attackCooldown: number = 0;
     stunTimer: number = 0;
+    /** Frames of hit stun applied by the last hit (for HUD bar drain). */
+    hitStunDisplayFrames: number = 0;
+    /** Hits landed in the current combo; increments only if defender was already in hit stun. */
+    comboCounter: number = 0;
     frameTimer: number = 0; // Current frame of action
     currentAttackType: AttackType | null = null;
     currentAttackDef: AttackDefinition | null = null;
@@ -796,6 +810,26 @@ class FighterEntity {
         this.mirrorX = this.x;
     }
 
+    /**
+     * True when holding horizontal "away from opponent" only (Street Fighter–style stand guard).
+     * Mutually exclusive directions avoid accidental block when pressing both.
+     */
+    private isHoldingAwayFromOpponent(input: InputState, opponent: FighterEntity): boolean {
+        const myCx = this.x + this.width / 2;
+        const opCx = opponent.x + opponent.width / 2;
+        if (myCx < opCx) return input.left && !input.right;
+        if (myCx > opCx) return input.right && !input.left;
+        return false;
+    }
+
+    /** Grounded guard: crouch (down) or stand (back / away from opponent). */
+    private shouldEnterBlock(input: InputState, opponent: FighterEntity): boolean {
+        if (!this.isGrounded) return false;
+        if (input.down) return true;
+        if (input.up) return false;
+        return this.isHoldingAwayFromOpponent(input, opponent);
+    }
+
     update(input: InputState, opponent: FighterEntity, inputHandler: InputHandler | null = null) {
         if (this.state === FighterState.DEFEATED) {
             this.updateAnimation();
@@ -809,11 +843,15 @@ class FighterEntity {
         // Character mirroring (maintain consistent controls)
         this.updateMirroring(opponent);
 
-        // Handle Stun
+        // Handle Stun (hit stun: unactionable until timer reaches zero; combo drops when we recover)
         if (this.stunTimer > 0) {
             this.state = FighterState.STUNNED;
             this.stunTimer--;
-            if (this.stunTimer <= 0) this.state = FighterState.IDLE;
+            if (this.stunTimer <= 0) {
+                this.state = FighterState.IDLE;
+                this.hitStunDisplayFrames = 0;
+                opponent.comboCounter = 0;
+            }
              // Apply friction while stunned
              this.velocityX *= 0.8;
              this.x += this.velocityX;
@@ -855,13 +893,13 @@ class FighterEntity {
         // Cooldown recovery
         if (this.attackCooldown > 0) this.attackCooldown--;
 
-        // --- Blocking Check (must be before movement) ---
-        if (this.isGrounded && input.down) {
+        // --- Blocking (before movement / attacks): crouch guard (down) or stand guard (away from foe) ---
+        if (this.shouldEnterBlock(input, opponent)) {
             this.state = FighterState.BLOCKING;
             this.velocityX = 0;
             this.animFrame++;
             this.updateAnimation();
-            return; // Blocking takes priority, don't process movement or attacks
+            return;
         }
 
         // --- Jump start ---
@@ -1089,8 +1127,11 @@ class FighterEntity {
         return { x: worldX, y: worldY, w: worldW, h: worldH };
     }
 
+    /**
+     * Single tight AABB vs sprite box (inset). Handy for debug/UI; **hit resolution uses
+     * `getHurtboxesWorld()`** so defender state matches per-frame hurtboxes when attacking.
+     */
     getBodyHurtboxWorld(): { x: number; y: number; w: number; h: number } {
-        // Tight body volume; vertical must use same feet line as transformCollisionBox (not stale this.y).
         const feetY = this.getFeetWorldY();
         const topY = feetY - this.height;
         const insetX = this.width * 0.2;
@@ -1103,8 +1144,15 @@ class FighterEntity {
             h: this.height - insetTop - insetBottom
         };
     }
+
+    /** Defender hurtboxes this frame in screen space (one or more AABBs — any overlap with a hitbox counts). */
+    getHurtboxesWorld(): { x: number; y: number; w: number; h: number }[] {
+        const { hurtboxes } = this.getCurrentFrameCollisionBoxes();
+        if (hurtboxes.length === 0) return [this.getBodyHurtboxWorld()];
+        return hurtboxes.map((hb) => this.transformCollisionBox(hb));
+    }
     
-    // AABB collision check
+    /** Axis-aligned rectangle overlap (standard 2D fighting-game hit vs hurt test). */
     checkAABBCollision(box1: { x: number; y: number; w: number; h: number }, 
                        box2: { x: number; y: number; w: number; h: number }): boolean {
         return box1.x < box2.x + box2.w &&
@@ -1166,28 +1214,28 @@ class FighterEntity {
             return;
         }
         
-        // Get current frame's attack hitboxes and opponent body volume.
         const { hitboxes } = this.getCurrentFrameCollisionBoxes();
-        const opponentBody = opponent.getBodyHurtboxWorld();
+        const defenderHurts = opponent.getHurtboxesWorld();
 
-        // Check each hitbox directly against sprite-aligned opponent body.
         for (const hitbox of hitboxes) {
             const worldHitbox = this.transformCollisionBox(hitbox);
-            if (!this.checkAABBCollision(worldHitbox, opponentBody)) continue;
+            for (const hurt of defenderHurts) {
+                if (!this.checkAABBCollision(worldHitbox, hurt)) continue;
 
-            const overlapLeft = Math.max(worldHitbox.x, opponentBody.x);
-            const overlapTop = Math.max(worldHitbox.y, opponentBody.y);
-            const overlapRight = Math.min(worldHitbox.x + worldHitbox.w, opponentBody.x + opponentBody.w);
-            const overlapBottom = Math.min(worldHitbox.y + worldHitbox.h, opponentBody.y + opponentBody.h);
-            const overlapW = overlapRight - overlapLeft;
-            const overlapH = overlapBottom - overlapTop;
-            if (overlapW <= 0 || overlapH <= 0) continue;
+                const overlapLeft = Math.max(worldHitbox.x, hurt.x);
+                const overlapTop = Math.max(worldHitbox.y, hurt.y);
+                const overlapRight = Math.min(worldHitbox.x + worldHitbox.w, hurt.x + hurt.w);
+                const overlapBottom = Math.min(worldHitbox.y + worldHitbox.h, hurt.y + hurt.h);
+                const overlapW = overlapRight - overlapLeft;
+                const overlapH = overlapBottom - overlapTop;
+                if (overlapW <= 0 || overlapH <= 0) continue;
 
-            const impactX = overlapLeft + overlapW / 2;
-            const impactY = overlapTop + overlapH / 2;
-            this.processHit(opponent, impactX, impactY);
-            this.alreadyHitTargets.add(opponent); // Mark as hit
-            return; // Only one hit per attack
+                const impactX = overlapLeft + overlapW / 2;
+                const impactY = overlapTop + overlapH / 2;
+                this.processHit(opponent, impactX, impactY);
+                this.alreadyHitTargets.add(opponent);
+                return;
+            }
         }
     }
     
@@ -1201,7 +1249,8 @@ class FighterEntity {
             const isFacingAttacker = (opponent.facingRight && this.x > opponent.x) || (!opponent.facingRight && this.x < opponent.x);
             
         if (isBlocking && isFacingAttacker && attackDef.canBeBlocked) {
-            // BLOCKED
+            // BLOCKED — breaks the attacker's combo string
+            this.comboCounter = 0;
             let blockedDamage = Math.floor(attackDef.damage * 0.2); // 20% chip damage
             let energyGain = Math.floor(attackDef.energyGain * 0.5); // Less energy for blocked hits
                 
@@ -1220,7 +1269,11 @@ class FighterEntity {
                 opponent.hitEffects.push({ x: impactX, y: impactY, life: 8, maxLife: 8, blocked: true });
                 console.log(`${opponent.config.name} blocked the attack!`);
             } else {
-            // HIT CONFIRMED
+            // HIT CONFIRMED — combo counts only while defender remains in hit stun
+            const defenderInHitstun = opponent.stunTimer > 0;
+            if (defenderInHitstun) this.comboCounter++;
+            else this.comboCounter = 1;
+
             const knockbackScreen = baseToScreen(attackDef.knockback);
             const knockbackX = this.facingRight ? knockbackScreen : -knockbackScreen;
             
@@ -1236,9 +1289,13 @@ class FighterEntity {
 
     takeDamage(amount: number, stunFrames: number, knockbackX: number) {
         if (this.state === FighterState.DEFEATED) return;
-        if (amount > 0) this.onHitTaken?.();
+        if (amount > 0) {
+            this.onHitTaken?.();
+            this.comboCounter = 0;
+        }
         this.hp = Math.max(0, this.hp - amount);
         this.stunTimer = stunFrames;
+        if (stunFrames > 0) this.hitStunDisplayFrames = stunFrames;
         this.velocityX = knockbackX;
         
         // Apply knockback but enforce boundaries immediately
