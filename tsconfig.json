@@ -1,0 +1,15 @@
+{
+  "compilerOptions": {
+    "target": "es2017",
+    "module": "none",
+    "outFile": "./game.js",
+    "strict": true,
+    "sourceMap": false,
+    "declaration": false,
+    "skipLibCheck": true,
+    "allowJs": false,
+    "noResolve": false
+  },
+  "files": ["game.ts", "input_ai.ts", "engine.ts"],
+  "exclude": ["game.js", "**/*.js"]
+}
