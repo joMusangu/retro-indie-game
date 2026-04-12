@@ -277,14 +277,41 @@ class FightingGameEngine {
         const gap = 12;
         const sidePadding = 32;
         const rows = Math.ceil(FIGHTER_ROSTER.length / columns);
-        const viewportY = 92;
-        const viewportH = 560;
+        const viewportY = 88;
+        // Leave room for footer copy + MAIN MENU / P2 BACK buttons inside SCREEN_HEIGHT
+        const footerReserve = 112;
+        const viewportH = Math.max(220, Math.min(498, SCREEN_HEIGHT - viewportY - footerReserve));
         const gridW = SCREEN_WIDTH - sidePadding * 2;
         const gridX = sidePadding;
         const cardW = Math.floor((gridW - (columns - 1) * gap) / columns);
         const contentH = viewportH;
         const cardH = Math.floor((contentH - (rows - 1) * gap) / rows);
         return { columns, cardW, cardH, gap, rows, gridW, gridX, viewportY, viewportH, contentH };
+    }
+
+    /** Help panel: shared draw + hit-test (title above inner body; back button inside panel). */
+    private getHelpLayout() {
+        const outerMargin = 20;
+        const panelW = Math.min(620, SCREEN_WIDTH - outerMargin * 2);
+        const panelH = Math.min(440, SCREEN_HEIGHT - outerMargin * 2);
+        const panelX = (SCREEN_WIDTH - panelW) / 2;
+        const panelY = (SCREEN_HEIGHT - panelH) / 2;
+        const pad = 20;
+        const titleBand = 56;
+        const titleCy = panelY + pad + titleBand / 2;
+        const innerX = panelX + pad;
+        const innerY = panelY + pad + titleBand;
+        const innerW = panelW - pad * 2;
+        const backH = 42;
+        const backGap = 14;
+        const innerH = panelH - pad * 2 - titleBand - backH - backGap;
+        const backW = 200;
+        const backX = (SCREEN_WIDTH - backW) / 2;
+        const backY = panelY + panelH - pad - backH;
+        return {
+            panelX, panelY, panelW, panelH, pad, titleCy, innerX, innerY, innerW, innerH,
+            backX, backY, backW, backH,
+        };
     }
 
     private getRosterMaxScroll(): number {
@@ -332,11 +359,19 @@ class FightingGameEngine {
 
     updateHelp() {
         if (this.menuCooldown > 0) this.menuCooldown--;
-        const backButtonSize = 60, backButtonX = 30, backButtonY = 30;
-        const isMouseOverBack = this.isMouseInRect(backButtonX, backButtonY, backButtonSize, backButtonSize);
+        const { backX, backY, backW, backH } = this.getHelpLayout();
+        const isMouseOverBack = this.isMouseInRect(backX, backY, backW, backH);
         if (this.menuCooldown === 0) {
-            if (this.mouseClicked && isMouseOverBack) { this.gameState = GameState.MENU; this.menuCooldown = 20; this.mouseClicked = false; }
-            else if (this.player1Input.keys.btnA || this.player1Input.keys.btnB || this.player1Input.keys.pause) { this.gameState = GameState.MENU; this.menuCooldown = 20; }
+            if (this.mouseClicked && isMouseOverBack) {
+                this.gameState = GameState.MENU;
+                this.menuCooldown = 20;
+                this.mouseClicked = false;
+                return;
+            }
+            if (this.player1Input.keys.btnA || this.player1Input.keys.btnB || this.player1Input.keys.pause) {
+                this.gameState = GameState.MENU;
+                this.menuCooldown = 20;
+            }
         }
         if (this.mouseClicked) this.mouseClicked = false;
     }
@@ -913,23 +948,62 @@ class FightingGameEngine {
 
     drawHelp() {
         const centerX = SCREEN_WIDTH / 2;
-        const panelWidth = 700;
-        const panelHeight = 540;
-        const panelX = centerX - panelWidth / 2;
-        const panelY = 30;
+        const {
+            panelX, panelY, panelW, panelH, titleCy, innerX, innerY, innerW, innerH,
+            backX, backY, backW, backH,
+        } = this.getHelpLayout();
+
         this.ctx.fillStyle = PALETTE.WHITE;
         this.ctx.strokeStyle = PALETTE.OUTLINE;
         this.ctx.lineWidth = 5;
-        this.ctx.fillRect(panelX, panelY, panelWidth, panelHeight);
-        this.ctx.strokeRect(panelX, panelY, panelWidth, panelHeight);
+        this.ctx.fillRect(panelX, panelY, panelW, panelH);
+        this.ctx.strokeRect(panelX, panelY, panelW, panelH);
+
         this.ctx.fillStyle = PALETTE.BLACK;
-        this.ctx.font = "bold 42px 'Arial', sans-serif";
+        this.ctx.font = "bold 34px 'Arial', sans-serif";
         this.ctx.textAlign = "center";
-        this.ctx.fillText("HOW TO PLAY", centerX, panelY + 25);
-        this.ctx.font = "20px 'Arial', sans-serif";
-        this.ctx.fillText("WASD/Arrows to move, F/G to attack, ESC to pause.", centerX, panelY + 120);
-        this.ctx.fillText("Click back or press ESC/Enter to return.", centerX, panelY + 160);
+        this.ctx.textBaseline = "middle";
+        this.ctx.fillText("HOW TO PLAY", centerX, titleCy);
+
+        this.ctx.fillStyle = PALETTE.BACKGROUND_LIGHT;
+        this.ctx.strokeStyle = PALETTE.OUTLINE;
+        this.ctx.lineWidth = 3;
+        this.ctx.fillRect(innerX, innerY, innerW, innerH);
+        this.ctx.strokeRect(innerX, innerY, innerW, innerH);
+
+        this.ctx.fillStyle = PALETTE.BLACK;
+        this.ctx.font = "18px 'Arial', sans-serif";
+        this.ctx.textBaseline = "top";
+        const lines = [
+            "WASD or Arrow keys — move",
+            "F / G — light punch / heavy kick (Enter also confirms menus)",
+            "S or Down — crouch block",
+            "ESC — pause in fight; B / Esc — back in menus",
+        ];
+        let ty = innerY + 18;
+        const lineGap = 26;
+        for (const line of lines) {
+            this.ctx.fillText(line, centerX, ty);
+            ty += lineGap;
+        }
+        this.ctx.font = "16px 'Arial', sans-serif";
+        this.ctx.fillStyle = "#333333";
+        this.ctx.fillText("Press Enter, Esc, or G to return to the main menu.", centerX, innerY + innerH - 36);
+
+        const overBack = this.isMouseInRect(backX, backY, backW, backH);
+        this.ctx.fillStyle = overBack ? PALETTE.PASTEL_BLUE : PALETTE.WHITE;
+        this.ctx.strokeStyle = PALETTE.OUTLINE;
+        this.ctx.lineWidth = 3;
+        this.ctx.fillRect(backX, backY, backW, backH);
+        this.ctx.strokeRect(backX, backY, backW, backH);
+        this.ctx.fillStyle = PALETTE.BLACK;
+        this.ctx.font = "bold 18px 'Arial', sans-serif";
+        this.ctx.textAlign = "center";
+        this.ctx.textBaseline = "middle";
+        this.ctx.fillText("BACK", centerX, backY + backH / 2);
+
         this.ctx.textAlign = "left";
+        this.ctx.textBaseline = "alphabetic";
     }
 
     drawCharacterSelect() {
