@@ -1316,6 +1316,15 @@ class FighterEntity {
         }
     }
 
+    /** First animation in priority order that already has a loaded image (avoids huge “placeholder” rects). */
+    private getDrawableAnimation(): SpriteAnimation | null {
+        const tryAnim = (a: SpriteAnimation | null | undefined): SpriteAnimation | null => {
+            if (!a || !a.spritePath) return null;
+            return spriteLoader.getSprite(a.spritePath) ? a : null;
+        };
+        return tryAnim(this.currentAnimation) || tryAnim(this.idleAnimation);
+    }
+
     draw(ctx: CanvasRenderingContext2D) {
         const centerX = this.x + this.width / 2;
         if (!this.groundOffsetResolved && this.idleAnimation.getSprite()) this.resolveGroundOffset();
@@ -1326,20 +1335,18 @@ class FighterEntity {
         ctx.ellipse(centerX, feetY - 5, this.width / 3, 8, 0, 0, Math.PI * 2);
         ctx.fill();
         
-        // Draw sprite from individual animation files
-        if (this.currentAnimation) {
-            const sprite = this.currentAnimation.getSprite();
+        const animDraw = this.getDrawableAnimation();
+        if (animDraw) {
+            const sprite = spriteLoader.getSprite(animDraw.spritePath);
             if (sprite) {
                 if (!this.groundOffsetResolved) {
                     this.resolveGroundOffset();
                 }
 
-                const frameX = this.currentAnimation.getCurrentFrameX();
-                const frameWidth = this.currentAnimation.getFrameWidth();
-                const frameHeight = this.currentAnimation.getFrameHeight();
-                
-                // Normalize all fighters to a consistent on-screen box size.
-                // Sprite frame is fit into the box while preserving source aspect ratio.
+                const frameX = animDraw.getCurrentFrameX();
+                const frameWidth = animDraw.getFrameWidth();
+                const frameHeight = animDraw.getFrameHeight();
+
                 const frameAspect = frameWidth / Math.max(1, frameHeight);
                 const boxAspect = this.width / Math.max(1, this.height);
                 let drawWidth = this.width;
@@ -1349,24 +1356,20 @@ class FighterEntity {
                 } else {
                     drawWidth = Math.round(drawHeight * frameAspect);
                 }
-                
-                // CRITICAL: Always align fighter's bottom edge DIRECTLY on GROUND_Y (the black ground line)
+
                 const drawX = this.x + Math.round((this.width - drawWidth) / 2);
                 const drawY = GROUND_Y - drawHeight + this.groundOffsetPx + baseToScreen(this.z);
-                
-                // Enforce alignment - always maintain this.y so bottom edge is at GROUND_Y
+
                 this.y = GROUND_Y - this.height + this.groundOffsetPx + baseToScreen(this.z);
                 this.isGrounded = (this.z === 0 && this.velocityZ === 0);
-                
-                // Enforce screen boundaries - ensure fighter never goes off screen horizontally
+
                 const minX = 0;
                 const maxX = SCREEN_WIDTH - this.width;
                 if (this.x < minX) this.x = minX;
                 if (this.x > maxX) this.x = maxX;
-                
-                // Determine if we need to flip the sprite (flip when facing left)
+
                 const needsFlip = !this.facingRight;
-                
+
                 if (needsFlip) {
                     ctx.save();
                     ctx.scale(-1, 1);
@@ -1376,49 +1379,16 @@ class FighterEntity {
                         -drawX - drawWidth, drawY, drawWidth, drawHeight
                     );
                     ctx.restore();
-            } else {
+                } else {
                     ctx.drawImage(
                         sprite,
                         frameX, 0, frameWidth, frameHeight,
                         drawX, drawY, drawWidth, drawHeight
                     );
                 }
-            } else {
-                // Fallback: draw placeholder if sprite not loaded
-                ctx.fillStyle = PALETTE.PASTEL_BLUE;
-                ctx.strokeStyle = PALETTE.OUTLINE;
-                ctx.lineWidth = 3;
-                ctx.fillRect(this.x, this.y, this.width, this.height);
-                ctx.strokeRect(this.x, this.y, this.width, this.height);
             }
-        } else {
-            // Fallback: draw placeholder
-            ctx.fillStyle = PALETTE.PASTEL_BLUE;
-            ctx.strokeStyle = PALETTE.OUTLINE;
-            ctx.lineWidth = 3;
-            ctx.fillRect(this.x, this.y, this.width, this.height);
-            ctx.strokeRect(this.x, this.y, this.width, this.height);
         }
-        
-        // Attack swipe — anchored to torso (not bbox top) to avoid stray pixels above the head
-        if (this.state === FighterState.ATTACKING && this.frameTimer > 5 && this.frameTimer < 15) {
-            const midY = this.y + this.height * 0.42;
-            const cx = this.facingRight ? centerX + this.width * 0.28 : centerX - this.width * 0.28;
-            ctx.save();
-            ctx.globalAlpha = 0.75;
-            ctx.strokeStyle = PALETTE.ACCENT_YELLOW;
-            ctx.lineWidth = 5;
-            ctx.lineCap = "round";
-            ctx.beginPath();
-            if (this.facingRight) {
-                ctx.arc(cx, midY, 22, -Math.PI * 0.35, Math.PI * 0.15);
-            } else {
-                ctx.arc(cx, midY, 22, Math.PI * 0.85, Math.PI * 1.35);
-            }
-            ctx.stroke();
-            ctx.restore();
-        }
-        
+
         // Draw hit/block effects - 16-bit style colorful
         for (const effect of this.hitEffects) {
             const alpha = effect.life / effect.maxLife;
