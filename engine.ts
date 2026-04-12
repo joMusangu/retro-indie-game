@@ -42,6 +42,11 @@ class FightingGameEngine {
         this.canvas = document.getElementById('gameCanvas') as HTMLCanvasElement;
         this.canvas.width = SCREEN_WIDTH;
         this.canvas.height = SCREEN_HEIGHT;
+        this.layoutCanvasToViewport();
+        const refit = () => this.layoutCanvasToViewport();
+        window.addEventListener("resize", refit);
+        window.visualViewport?.addEventListener("resize", refit);
+        window.visualViewport?.addEventListener("scroll", refit);
         this.canvas.addEventListener('mousemove', (e) => {
             const rect = this.canvas.getBoundingClientRect();
             const scaleX = this.canvas.width / rect.width;
@@ -73,6 +78,23 @@ class FightingGameEngine {
         this.aiController = new AIController();
         Object.values(CHARACTER_PREVIEW_PATHS).forEach(path => { if (path) spriteLoader.loadSprite(path); });
         spriteLoader.loadSprite(ARENA_SPRITESHEET_PATH);
+    }
+
+    /** Scale canvas CSS size to fit the window; drawing stays at SCREEN_WIDTH × SCREEN_HEIGHT. */
+    private layoutCanvasToViewport(): void {
+        const iw = SCREEN_WIDTH;
+        const ih = SCREEN_HEIGHT;
+        const vv = window.visualViewport;
+        const vw = vv ? vv.width : window.innerWidth;
+        const vh = vv ? vv.height : window.innerHeight;
+        const pad = 24;
+        const maxW = Math.max(80, vw - pad * 2);
+        const maxH = Math.max(80, vh - pad * 2);
+        const scale = Math.min(maxW / iw, maxH / ih);
+        const dw = Math.max(1, Math.floor(iw * scale));
+        const dh = Math.max(1, Math.floor(ih * scale));
+        this.canvas.style.width = `${dw}px`;
+        this.canvas.style.height = `${dh}px`;
     }
 
     startFight() {
@@ -848,10 +870,10 @@ class FightingGameEngine {
         this.ctx.font = "bold 48px 'Arial', sans-serif";
         this.ctx.textAlign = "center";
         this.ctx.textBaseline = "middle";
-        this.ctx.strokeText("LETS FIGHT!", centerX, startY);
-        this.ctx.fillText("LETS FIGHT!", centerX, startY);
+        this.ctx.strokeText("WHO WOULD WIN?", centerX, startY);
+        this.ctx.fillText("WHO WOULD WIN?", centerX, startY);
         this.ctx.font = "bold 32px 'Arial', sans-serif";
-        const modes = ["1v1 vs AI", "1v1 PvP", "Back"];
+        const modes = ["1v1 vs CPU", "1v1 PvP", "Back"];
         for (let i = 0; i < modes.length; i++) {
             const y = startY + 100 + i * 80;
             const itemWidth = 300;

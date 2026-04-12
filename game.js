@@ -1521,6 +1521,7 @@ class AIController {
 }
 class FightingGameEngine {
     constructor() {
+        var _a, _b;
         this.roundDurationSeconds = 75;
         this.roundTimeFrames = 75 * FPS;
         /** True when last round ended in a tie (timeout, same damage) — show DRAW and replay same round number. */
@@ -1556,6 +1557,11 @@ class FightingGameEngine {
         this.canvas = document.getElementById('gameCanvas');
         this.canvas.width = SCREEN_WIDTH;
         this.canvas.height = SCREEN_HEIGHT;
+        this.layoutCanvasToViewport();
+        const refit = () => this.layoutCanvasToViewport();
+        window.addEventListener("resize", refit);
+        (_a = window.visualViewport) === null || _a === void 0 ? void 0 : _a.addEventListener("resize", refit);
+        (_b = window.visualViewport) === null || _b === void 0 ? void 0 : _b.addEventListener("scroll", refit);
         this.canvas.addEventListener('mousemove', (e) => {
             const rect = this.canvas.getBoundingClientRect();
             const scaleX = this.canvas.width / rect.width;
@@ -1589,6 +1595,22 @@ class FightingGameEngine {
         Object.values(CHARACTER_PREVIEW_PATHS).forEach(path => { if (path)
             spriteLoader.loadSprite(path); });
         spriteLoader.loadSprite(ARENA_SPRITESHEET_PATH);
+    }
+    /** Scale canvas CSS size to fit the window; drawing stays at SCREEN_WIDTH × SCREEN_HEIGHT. */
+    layoutCanvasToViewport() {
+        const iw = SCREEN_WIDTH;
+        const ih = SCREEN_HEIGHT;
+        const vv = window.visualViewport;
+        const vw = vv ? vv.width : window.innerWidth;
+        const vh = vv ? vv.height : window.innerHeight;
+        const pad = 24;
+        const maxW = Math.max(80, vw - pad * 2);
+        const maxH = Math.max(80, vh - pad * 2);
+        const scale = Math.min(maxW / iw, maxH / ih);
+        const dw = Math.max(1, Math.floor(iw * scale));
+        const dh = Math.max(1, Math.floor(ih * scale));
+        this.canvas.style.width = `${dw}px`;
+        this.canvas.style.height = `${dh}px`;
     }
     startFight() {
         if (!this.fighter1 || !this.fighter2)
