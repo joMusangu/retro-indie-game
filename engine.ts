@@ -908,7 +908,7 @@ class FightingGameEngine {
         this.ctx.strokeText("WHO WOULD WIN?", centerX, startY);
         this.ctx.fillText("WHO WOULD WIN?", centerX, startY);
         this.ctx.font = "bold 32px 'Arial', sans-serif";
-        const modes = ["1v1 vs CPU", "1v1 PvP", "Back"];
+        const modes = ["1v1 vs CPU", "1v1 PvP"];
         for (let i = 0; i < modes.length; i++) {
             const y = startY + 100 + i * 80;
             const itemWidth = 300;
