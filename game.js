@@ -2784,7 +2784,6 @@ class FightingGameEngine {
         this.ctx.font = "bold 18px 'Arial', sans-serif";
         this.ctx.fillText("Click an arena or press Enter to review · Arrows to change selection", SCREEN_WIDTH / 2, footerY);
         this.ctx.font = "16px 'Arial', sans-serif";
-        this.ctx.fillText("B / Esc: back to character select", SCREEN_WIDTH / 2, footerY + 26);
         this.ctx.textAlign = "left";
         this.ctx.textBaseline = "alphabetic";
     }
@@ -2849,8 +2848,6 @@ class FightingGameEngine {
         this.ctx.fillStyle = "#333333";
         this.ctx.textAlign = "center";
         this.ctx.textBaseline = "top";
-        this.ctx.fillText("W / S or arrows to move   ·   Enter or F to confirm   ·   Click a button", SCREEN_WIDTH / 2, footerTop);
-        this.ctx.fillText("ESC to resume (release ESC once after opening pause)   ·   G also resumes", SCREEN_WIDTH / 2, footerTop + 18);
         this.ctx.textAlign = "left";
         this.ctx.textBaseline = "alphabetic";
     }
