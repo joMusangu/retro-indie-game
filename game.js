@@ -2632,7 +2632,7 @@ class FightingGameEngine {
         this.ctx.textBaseline = "middle";
         this.ctx.font = "bold 20px 'Arial', sans-serif";
         if (isP1) {
-            this.ctx.fillText("Select a fighter to open details, SCREEN_WIDTH / 2, footerY);
+            this.ctx.fillText("Select a fighter to open details", SCREEN_WIDTH / 2, footerY);
         }
         else {
             this.ctx.fillText("Select a fighter to open details", SCREEN_WIDTH / 2, footerY);
@@ -2881,6 +2881,8 @@ class FightingGameEngine {
         this.ctx.fillStyle = "#333333";
         this.ctx.textAlign = "center";
         this.ctx.textBaseline = "top";
+        this.ctx.fillText("W / S or arrows to move   ·   Enter or F to confirm   ·   Click a button", SCREEN_WIDTH / 2, footerTop);
+        this.ctx.fillText("ESC to resume (release ESC once after opening pause)   ·   G also resumes", SCREEN_WIDTH / 2, footerTop + 18);
         this.ctx.textAlign = "left";
         this.ctx.textBaseline = "alphabetic";
     }
