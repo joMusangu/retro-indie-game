@@ -2632,10 +2632,10 @@ class FightingGameEngine {
         this.ctx.textBaseline = "middle";
         this.ctx.font = "bold 20px 'Arial', sans-serif";
         if (isP1) {
-            this.ctx.fillText("Select a fighter to open details  ·  B / Esc: main menu", SCREEN_WIDTH / 2, footerY + 10);
+            this.ctx.fillText("Select a fighter to open details, SCREEN_WIDTH / 2, footerY);
         }
         else {
-            this.ctx.fillText("Select a fighter to open details", SCREEN_WIDTH / 2, footerY + 10);
+            this.ctx.fillText("Select a fighter to open details", SCREEN_WIDTH / 2, footerY);
         }
         const menuBtnX = SCREEN_WIDTH / 2 - 80;
         const menuBtnY = footerY + 72;
