@@ -304,9 +304,7 @@ class AIController {
                 input.left  = opponentRight;
                 break;
             case AiDecision.BLOCK:
-                // Stand guard: hold away from opponent (same rule as human back-to-block).
-                if (opponentRight) input.left = true;
-                else input.right = true;
+                input.down = true;
                 break;
             case AiDecision.IDLE:          /* stand still */                              break;
         }

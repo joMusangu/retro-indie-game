@@ -631,28 +631,9 @@ class FighterEntity {
         }
         this.mirrorX = this.x;
     }
-    /**
-     * True when holding horizontal "away from opponent" only (Street Fighter–style stand guard).
-     * Mutually exclusive directions avoid accidental block when pressing both.
-     */
-    isHoldingAwayFromOpponent(input, opponent) {
-        const myCx = this.x + this.width / 2;
-        const opCx = opponent.x + opponent.width / 2;
-        if (myCx < opCx)
-            return input.left && !input.right;
-        if (myCx > opCx)
-            return input.right && !input.left;
-        return false;
-    }
-    /** Grounded guard: crouch (down) or stand (back / away from opponent). */
-    shouldEnterBlock(input, opponent) {
-        if (!this.isGrounded)
-            return false;
-        if (input.down)
-            return true;
-        if (input.up)
-            return false;
-        return this.isHoldingAwayFromOpponent(input, opponent);
+    /** Crouch guard only (no stand / back-to-block). */
+    shouldEnterBlock(input) {
+        return this.isGrounded && input.down;
     }
     update(input, opponent, inputHandler = null) {
         if (this.state === FighterState.DEFEATED) {
@@ -708,8 +689,8 @@ class FighterEntity {
         // Cooldown recovery
         if (this.attackCooldown > 0)
             this.attackCooldown--;
-        // --- Blocking (before movement / attacks): crouch guard (down) or stand guard (away from foe) ---
-        if (this.shouldEnterBlock(input, opponent)) {
+        // --- Blocking: crouch (down) only ---
+        if (this.shouldEnterBlock(input)) {
             this.state = FighterState.BLOCKING;
             this.velocityX = 0;
             this.animFrame++;
@@ -851,7 +832,11 @@ class FighterEntity {
         const hurtboxX = -hurtboxWidthBase / 2;
         const activeStart = type === AttackType.FINISHER ? 8 : (type === AttackType.KICK_HEAVY ? 6 : 5);
         const activeEnd = type === AttackType.FINISHER ? 15 : (type === AttackType.KICK_HEAVY ? 12 : 10);
-        const baseReach = type === AttackType.FINISHER ? bodyWidthBase * 1.05 : (type === AttackType.KICK_HEAVY ? bodyWidthBase * 0.85 : bodyWidthBase * 0.7);
+        // Weapon depth in screen px → base (was ~0.7× body width in base → ~200px+ “ghost” range).
+        const reachMinPx = type === AttackType.FINISHER ? 56 : (type === AttackType.KICK_HEAVY ? 48 : 40);
+        const reachMaxPx = type === AttackType.FINISHER ? 86 : (type === AttackType.KICK_HEAVY ? 74 : 62);
+        const reachMinBase = screenToBase(reachMinPx);
+        const reachMaxBase = screenToBase(reachMaxPx);
         const baseHeight = type === AttackType.KICK_HEAVY ? bodyHeightBase * 0.3 : bodyHeightBase * 0.34;
         const hitboxY = type === AttackType.KICK_HEAVY ? -bodyHeightBase * 0.45 : -bodyHeightBase * 0.72;
         // One entry per attack frame (must match totalFrames — e.g. FINISHER 32, not hardcoded 20).
@@ -861,7 +846,7 @@ class FighterEntity {
             // Add hitbox during active frames
             if (frame >= activeStart && frame <= activeEnd) {
                 const t = (frame - activeStart) / Math.max(1, activeEnd - activeStart);
-                const reach = baseReach * (0.85 + 0.3 * Math.sin(Math.PI * t));
+                const reach = reachMinBase + (reachMaxBase - reachMinBase) * (0.88 + 0.12 * Math.sin(Math.PI * t));
                 const hitboxHeight = baseHeight * (0.9 + 0.2 * Math.sin(Math.PI * t));
                 // IMPORTANT: Frame data is authored in canonical "facing right" space.
                 // transformCollisionBox() handles left-facing mirroring.
@@ -1006,6 +991,15 @@ class FighterEntity {
         if (this.alreadyHitTargets.has(opponent)) {
             return;
         }
+        // Melee sanity: skip if forward faces are farther apart than longest possible hit extension.
+        const maxWeaponPx = 100;
+        const myR = this.x + this.width;
+        const opL = opponent.x;
+        const opR = opponent.x + opponent.width;
+        const myL = this.x;
+        const gap = this.facingRight ? opL - myR : myL - opR;
+        if (gap > maxWeaponPx + 12)
+            return;
         const { hitboxes } = this.getCurrentFrameCollisionBoxes();
         const defenderHurts = opponent.getHurtboxesWorld();
         for (const hitbox of hitboxes) {
@@ -1518,11 +1512,7 @@ class AIController {
                 input.left = opponentRight;
                 break;
             case 5 /* AiDecision.BLOCK */:
-                // Stand guard: hold away from opponent (same rule as human back-to-block).
-                if (opponentRight)
-                    input.left = true;
-                else
-                    input.right = true;
+                input.down = true;
                 break;
             case 6 /* AiDecision.IDLE */: /* stand still */ break;
         }
@@ -2600,10 +2590,10 @@ class FightingGameEngine {
         this.ctx.textBaseline = "middle";
         this.ctx.font = "bold 20px 'Arial', sans-serif";
         if (isP1) {
-            this.ctx.fillText("Select a fighter to open details  ·  B / Esc: main menu", SCREEN_WIDTH / 2);
+            this.ctx.fillText("Select a fighter to open details  ·  B / Esc: main menu", SCREEN_WIDTH / 2, footerY);
         }
         else {
-            this.ctx.fillText("Select a fighter to open details", SCREEN_WIDTH / 2, footerY + 10);
+            this.ctx.fillText("Select a fighter to open details", SCREEN_WIDTH / 2, footerY);
         }
         const menuBtnX = SCREEN_WIDTH / 2 - 80;
         const menuBtnY = footerY + 72;
