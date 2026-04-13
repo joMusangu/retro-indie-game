@@ -195,6 +195,7 @@ class FightingGameEngine {
         } else if (this.gameState === GameState.PAUSED) this.updatePaused();
         else if (this.gameState === GameState.ROUND_END) this.updateRoundEnd();
         else if (this.gameState === GameState.GAME_OVER) this.updateGameOver();
+        else if (this.gameState === GameState.CONTROLS_INTRO) this.updateControlsIntro();
         if (this.mouseClicked) this.mouseClicked = false;
         this.player1Input.finalizeFrame();
         if (this.player2Input) this.player2Input.finalizeFrame();
@@ -495,9 +496,137 @@ class FightingGameEngine {
         }
     }
 
+    private static readonly CONTROLS_INTRO_STORAGE_KEY = "ww_w_seen_controls_intro_v1";
+
+    private hasSeenControlsIntro(): boolean {
+        try {
+            return localStorage.getItem(FightingGameEngine.CONTROLS_INTRO_STORAGE_KEY) === "1";
+        } catch {
+            return true;
+        }
+    }
+
+    private markControlsIntroSeen(): void {
+        try {
+            localStorage.setItem(FightingGameEngine.CONTROLS_INTRO_STORAGE_KEY, "1");
+        } catch {
+            /* private mode / quota */
+        }
+    }
+
     private confirmArenaAndStartFight() {
         this.resetMatch();
+        if (!this.hasSeenControlsIntro()) {
+            this.gameState = GameState.CONTROLS_INTRO;
+            this.menuCooldown = 28;
+            return;
+        }
         this.startFight();
+    }
+
+    private dismissControlsIntro() {
+        this.markControlsIntroSeen();
+        this.startFight();
+        this.menuCooldown = 18;
+    }
+
+    /** Layout for first-run controls modal (draw + hit-test). */
+    private getControlsIntroLayout() {
+        const panelW = Math.min(560, SCREEN_WIDTH - 40);
+        const panelH = this.gameMode === GameMode.OneVsOnePvP ? 340 : 280;
+        const panelX = (SCREEN_WIDTH - panelW) / 2;
+        const panelY = (SCREEN_HEIGHT - panelH) / 2;
+        const pad = 22;
+        const gotItW = 220;
+        const gotItH = 44;
+        const gotItX = (SCREEN_WIDTH - gotItW) / 2;
+        const gotItY = panelY + panelH - pad - gotItH;
+        return { panelX, panelY, panelW, panelH, pad, gotItX, gotItY, gotItW, gotItH };
+    }
+
+    updateControlsIntro() {
+        if (this.menuCooldown > 0) {
+            this.menuCooldown--;
+            return;
+        }
+        const { gotItX, gotItY, gotItW, gotItH } = this.getControlsIntroLayout();
+        if (this.mouseClicked && this.isMouseInRect(gotItX, gotItY, gotItW, gotItH)) {
+            this.dismissControlsIntro();
+            this.mouseClicked = false;
+            return;
+        }
+        if (this.player1Input.wasPressed("btnA") || this.player1Input.wasPressed("btnB")) {
+            this.dismissControlsIntro();
+            return;
+        }
+        if (this.mouseClicked) this.mouseClicked = false;
+    }
+
+    drawControlsIntro() {
+        const centerX = SCREEN_WIDTH / 2;
+        const { panelX, panelY, panelW, panelH, pad, gotItX, gotItY, gotItW, gotItH } = this.getControlsIntroLayout();
+
+        this.ctx.fillStyle = PALETTE.WHITE;
+        this.ctx.strokeStyle = PALETTE.OUTLINE;
+        this.ctx.lineWidth = 5;
+        this.ctx.fillRect(panelX, panelY, panelW, panelH);
+        this.ctx.strokeRect(panelX, panelY, panelW, panelH);
+
+        this.ctx.fillStyle = PALETTE.BLACK;
+        this.ctx.font = "bold 28px 'Arial', sans-serif";
+        this.ctx.textAlign = "center";
+        this.ctx.textBaseline = "middle";
+        this.ctx.fillText("CONTROLS", centerX, panelY + pad + 18);
+
+        this.ctx.font = "17px 'Arial', sans-serif";
+        this.ctx.textBaseline = "top";
+        let ty = panelY + pad + 48;
+        const lineGap = 22;
+        const p1Lines = [
+            "Player 1 — WASD or arrow keys: move",
+            "F: light punch   ·   G: heavy kick",
+            "Hold S or Down while grounded: crouch block",
+            "Esc: pause   ·   H: full help (main menu)",
+        ];
+        for (const line of p1Lines) {
+            this.ctx.fillText(line, centerX, ty);
+            ty += lineGap;
+        }
+        if (this.gameMode === GameMode.OneVsOnePvP) {
+            ty += 6;
+            this.ctx.font = "bold 17px 'Arial', sans-serif";
+            this.ctx.fillText("Player 2", centerX, ty);
+            ty += lineGap;
+            this.ctx.font = "17px 'Arial', sans-serif";
+            const p2Lines = [
+                "Arrow keys: move",
+                "1 or Numpad 1: punch   ·   2 or Numpad 2: kick",
+            ];
+            for (const line of p2Lines) {
+                this.ctx.fillText(line, centerX, ty);
+                ty += lineGap;
+            }
+        }
+
+        const overGot = this.isMouseInRect(gotItX, gotItY, gotItW, gotItH);
+        this.ctx.fillStyle = overGot ? PALETTE.PASTEL_GREEN : PALETTE.WHITE;
+        this.ctx.strokeStyle = PALETTE.OUTLINE;
+        this.ctx.lineWidth = 3;
+        this.ctx.fillRect(gotItX, gotItY, gotItW, gotItH);
+        this.ctx.strokeRect(gotItX, gotItY, gotItW, gotItH);
+        this.ctx.fillStyle = PALETTE.BLACK;
+        this.ctx.font = "bold 18px 'Arial', sans-serif";
+        this.ctx.textAlign = "center";
+        this.ctx.textBaseline = "middle";
+        this.ctx.fillText("GOT IT — START", centerX, gotItY + gotItH / 2);
+
+        this.ctx.font = "14px 'Arial', sans-serif";
+        this.ctx.fillStyle = "#444444";
+        this.ctx.textBaseline = "bottom";
+        this.ctx.fillText("Enter / G / click the button to begin", centerX, panelY + panelH - 8);
+
+        this.ctx.textAlign = "left";
+        this.ctx.textBaseline = "alphabetic";
     }
 
     updateArenaDetails() {
@@ -889,6 +1018,7 @@ class FightingGameEngine {
         else if (this.gameState === GameState.ROUND_END) this.drawRoundEnd();
         else if (this.gameState === GameState.GAME_OVER) this.drawGameOver();
         else if (this.gameState === GameState.HELP) this.drawHelp();
+        else if (this.gameState === GameState.CONTROLS_INTRO) this.drawControlsIntro();
         else if (this.gameState === GameState.ARENA_DETAILS) this.drawArenaDetails();
         else if (this.gameState === GameState.ARENA_SELECT) this.drawArenaSelect();
         else if (this.gameState === GameState.CHARACTER_DETAILS) this.drawCharacterDetails();

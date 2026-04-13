@@ -16,6 +16,16 @@ const GROUND_Y = Math.round(BASE_GROUND_Y * SCALE);
 const STANDARD_FIGHTER_HEIGHT = 380;
 const STANDARD_FIGHTER_WIDTH = 280;
 const FPS = 60;
+
+/** Heavy attack is a bow shot (projectile) — no melee hitboxes on that move. */
+const RANGED_HEAVY_ATTACK_KEYS = new Set<string>(["Huntress", "Huntress 2"]);
+
+function usesBowHeavyAttack(spriteKey: string): boolean {
+    return RANGED_HEAVY_ATTACK_KEYS.has(spriteKey);
+}
+
+/** Frame (1-based after startAttack) to release arrow; synced to bow draw animation. */
+const BOW_PROJECTILE_RELEASE_FRAME = 10;
 const FIXED_DELTA_TIME = 1 / 60; // timestep for updates
 
 // Modern Vector Color Palette ( no idea )
@@ -339,7 +349,9 @@ enum GameState {
     PAUSED,
     ROUND_END,
     GAME_OVER,
-    HELP
+    HELP,
+    /** One-time quick controls before first fight (skipped after localStorage flag). */
+    CONTROLS_INTRO,
 }
 
 // Game Modes enum
@@ -586,6 +598,9 @@ class FighterEntity {
     
     // One-hit-per-attack tracking
     alreadyHitTargets: Set<FighterEntity> = new Set();
+
+    /** Set on bow release frame; engine consumes to spawn arrow. */
+    pendingProjectileSpawn: boolean = false;
 
     /** Fired when this fighter deals damage to the opponent via processHit (optional; used for AI). */
     onHitDealt?: () => void;
@@ -844,6 +859,12 @@ class FighterEntity {
         if (this.state === FighterState.ATTACKING) {
             this.frameTimer++;
             this.velocityX = 0; // Stop moving while attacking
+
+            if (this.currentAttackType === AttackType.KICK_HEAVY &&
+                usesBowHeavyAttack(this.config.spriteKey) &&
+                this.frameTimer === BOW_PROJECTILE_RELEASE_FRAME) {
+                this.pendingProjectileSpawn = true;
+            }
             
             // Check collision every frame during active frames (new canonical system)
             if (this.currentAttackDef) {
@@ -962,7 +983,8 @@ class FighterEntity {
                     canBeBlocked: true,
                     layer: CollisionLayer.MID
                 };
-            case AttackType.KICK_HEAVY:
+            case AttackType.KICK_HEAVY: {
+                const bow = usesBowHeavyAttack(this.config.spriteKey);
                 return {
                     type: AttackType.KICK_HEAVY,
                     activeStart: 6,
@@ -971,7 +993,7 @@ class FighterEntity {
                     activeFrames: 7,
                     recoveryFrames: 12,
                     totalFrames: 25,
-                    frameData: this.generateDefaultFrameData(AttackType.KICK_HEAVY, 25),
+                    frameData: bow ? this.generateRangedBowHeavyFrameData(25) : this.generateDefaultFrameData(AttackType.KICK_HEAVY, 25),
                     damage: Math.floor(basePower * 1.2),
                     stunTime: 20,
                     knockback: baseKnockback * 1.5,
@@ -980,6 +1002,7 @@ class FighterEntity {
                     canBeBlocked: true,
                     layer: CollisionLayer.MID
                 };
+            }
             case AttackType.FINISHER:
                 return {
                     type: AttackType.FINISHER,
@@ -1014,9 +1037,9 @@ class FighterEntity {
         const activeStart = type === AttackType.FINISHER ? 8 : (type === AttackType.KICK_HEAVY ? 6 : 5);
         const activeEnd = type === AttackType.FINISHER ? 15 : (type === AttackType.KICK_HEAVY ? 12 : 10);
 
-        // Weapon depth in screen px → base (was ~0.7× body width in base → ~200px+ “ghost” range).
-        const reachMinPx = type === AttackType.FINISHER ? 56 : (type === AttackType.KICK_HEAVY ? 48 : 40);
-        const reachMaxPx = type === AttackType.FINISHER ? 86 : (type === AttackType.KICK_HEAVY ? 74 : 62);
+        // Weapon reach in screen px (extended so swords/poles overlap defender hurtboxes when sprites touch).
+        const reachMinPx = type === AttackType.FINISHER ? 68 : (type === AttackType.KICK_HEAVY ? 56 : 48);
+        const reachMaxPx = type === AttackType.FINISHER ? 102 : (type === AttackType.KICK_HEAVY ? 88 : 76);
         const reachMinBase = screenToBase(reachMinPx);
         const reachMaxBase = screenToBase(reachMaxPx);
         const baseHeight = type === AttackType.KICK_HEAVY ? bodyHeightBase * 0.3 : bodyHeightBase * 0.34;
@@ -1060,12 +1083,43 @@ class FighterEntity {
         return frames;
     }
 
+    /** Bow heavy: same hurtboxes, no melee hitboxes — damage comes from ArrowProjectile. */
+    generateRangedBowHeavyFrameData(totalFrames: number): AttackFrameData[] {
+        const frames: AttackFrameData[] = [];
+        const bodyHeightBase = screenToBase(this.height);
+        const bodyWidthBase = screenToBase(this.width);
+        const hurtboxWidthBase = bodyWidthBase * 0.65;
+        const hurtboxX = -hurtboxWidthBase / 2;
+        for (let frame = 0; frame < totalFrames; frame++) {
+            frames.push({
+                frame,
+                hitboxes: [],
+                hurtboxes: [{
+                    x: hurtboxX,
+                    y: -bodyHeightBase,
+                    width: hurtboxWidthBase,
+                    height: bodyHeightBase,
+                    layer: CollisionLayer.SCAN
+                }]
+            });
+        }
+        return frames;
+    }
+
+    /** Engine reads once to spawn arrow; clears the flag. */
+    takePendingProjectileSpawn(): boolean {
+        if (!this.pendingProjectileSpawn) return false;
+        this.pendingProjectileSpawn = false;
+        return true;
+    }
+
     startAttack(type: AttackType) {
         this.state = FighterState.ATTACKING;
         this.frameTimer = 0;
         this.currentAttackType = type;
         this.currentAttackDef = this.getAttackDefinition(type);
         this.alreadyHitTargets.clear(); // Reset hit tracking
+        this.pendingProjectileSpawn = false;
         this.animFrame = 0;
         console.log(`${this.config.name} used ${AttackType[type]}`);
 
@@ -1193,15 +1247,6 @@ class FighterEntity {
             return;
         }
 
-        // Melee sanity: skip if forward faces are farther apart than longest possible hit extension.
-        const maxWeaponPx = 100;
-        const myR = this.x + this.width;
-        const opL = opponent.x;
-        const opR = opponent.x + opponent.width;
-        const myL = this.x;
-        const gap = this.facingRight ? opL - myR : myL - opR;
-        if (gap > maxWeaponPx + 12) return;
-        
         const { hitboxes } = this.getCurrentFrameCollisionBoxes();
         const defenderHurts = opponent.getHurtboxesWorld();
 
@@ -1225,6 +1270,14 @@ class FighterEntity {
                 return;
             }
         }
+    }
+
+    /** Projectile hit uses the same block / damage / combo rules as melee processHit. */
+    applyStrikeAgainst(opponent: FighterEntity, attackDef: AttackDefinition, impactX: number, impactY: number) {
+        const prev = this.currentAttackDef;
+        this.currentAttackDef = attackDef;
+        this.processHit(opponent, impactX, impactY);
+        this.currentAttackDef = prev;
     }
     
     processHit(opponent: FighterEntity, impactX: number, impactY: number) {

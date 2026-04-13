@@ -295,6 +295,8 @@ var GameState;
     GameState[GameState["ROUND_END"] = 8] = "ROUND_END";
     GameState[GameState["GAME_OVER"] = 9] = "GAME_OVER";
     GameState[GameState["HELP"] = 10] = "HELP";
+    /** One-time quick controls before first fight (skipped after localStorage flag). */
+    GameState[GameState["CONTROLS_INTRO"] = 11] = "CONTROLS_INTRO";
 })(GameState || (GameState = {}));
 // Game Modes enum
 var GameMode;
@@ -1733,6 +1735,8 @@ class FightingGameEngine {
             this.updateRoundEnd();
         else if (this.gameState === GameState.GAME_OVER)
             this.updateGameOver();
+        else if (this.gameState === GameState.CONTROLS_INTRO)
+            this.updateControlsIntro();
         if (this.mouseClicked)
             this.mouseClicked = false;
         this.player1Input.finalizeFrame();
@@ -2079,9 +2083,126 @@ class FightingGameEngine {
             this.arenaSelection = 0;
         }
     }
+    hasSeenControlsIntro() {
+        try {
+            return localStorage.getItem(FightingGameEngine.CONTROLS_INTRO_STORAGE_KEY) === "1";
+        }
+        catch (_a) {
+            return true;
+        }
+    }
+    markControlsIntroSeen() {
+        try {
+            localStorage.setItem(FightingGameEngine.CONTROLS_INTRO_STORAGE_KEY, "1");
+        }
+        catch (_a) {
+            /* private mode / quota */
+        }
+    }
     confirmArenaAndStartFight() {
         this.resetMatch();
+        if (!this.hasSeenControlsIntro()) {
+            this.gameState = GameState.CONTROLS_INTRO;
+            this.menuCooldown = 28;
+            return;
+        }
         this.startFight();
+    }
+    dismissControlsIntro() {
+        this.markControlsIntroSeen();
+        this.startFight();
+        this.menuCooldown = 18;
+    }
+    /** Layout for first-run controls modal (draw + hit-test). */
+    getControlsIntroLayout() {
+        const panelW = Math.min(560, SCREEN_WIDTH - 40);
+        const panelH = this.gameMode === GameMode.OneVsOnePvP ? 340 : 280;
+        const panelX = (SCREEN_WIDTH - panelW) / 2;
+        const panelY = (SCREEN_HEIGHT - panelH) / 2;
+        const pad = 22;
+        const gotItW = 220;
+        const gotItH = 44;
+        const gotItX = (SCREEN_WIDTH - gotItW) / 2;
+        const gotItY = panelY + panelH - pad - gotItH;
+        return { panelX, panelY, panelW, panelH, pad, gotItX, gotItY, gotItW, gotItH };
+    }
+    updateControlsIntro() {
+        if (this.menuCooldown > 0) {
+            this.menuCooldown--;
+            return;
+        }
+        const { gotItX, gotItY, gotItW, gotItH } = this.getControlsIntroLayout();
+        if (this.mouseClicked && this.isMouseInRect(gotItX, gotItY, gotItW, gotItH)) {
+            this.dismissControlsIntro();
+            this.mouseClicked = false;
+            return;
+        }
+        if (this.player1Input.wasPressed("btnA") || this.player1Input.wasPressed("btnB")) {
+            this.dismissControlsIntro();
+            return;
+        }
+        if (this.mouseClicked)
+            this.mouseClicked = false;
+    }
+    drawControlsIntro() {
+        const centerX = SCREEN_WIDTH / 2;
+        const { panelX, panelY, panelW, panelH, pad, gotItX, gotItY, gotItW, gotItH } = this.getControlsIntroLayout();
+        this.ctx.fillStyle = PALETTE.WHITE;
+        this.ctx.strokeStyle = PALETTE.OUTLINE;
+        this.ctx.lineWidth = 5;
+        this.ctx.fillRect(panelX, panelY, panelW, panelH);
+        this.ctx.strokeRect(panelX, panelY, panelW, panelH);
+        this.ctx.fillStyle = PALETTE.BLACK;
+        this.ctx.font = "bold 28px 'Arial', sans-serif";
+        this.ctx.textAlign = "center";
+        this.ctx.textBaseline = "middle";
+        this.ctx.fillText("CONTROLS", centerX, panelY + pad + 18);
+        this.ctx.font = "17px 'Arial', sans-serif";
+        this.ctx.textBaseline = "top";
+        let ty = panelY + pad + 48;
+        const lineGap = 22;
+        const p1Lines = [
+            "Player 1 — WASD or arrow keys: move",
+            "F: light punch   ·   G: heavy kick",
+            "Hold S or Down while grounded: crouch block",
+            "Esc: pause   ·   H: full help (main menu)",
+        ];
+        for (const line of p1Lines) {
+            this.ctx.fillText(line, centerX, ty);
+            ty += lineGap;
+        }
+        if (this.gameMode === GameMode.OneVsOnePvP) {
+            ty += 6;
+            this.ctx.font = "bold 17px 'Arial', sans-serif";
+            this.ctx.fillText("Player 2", centerX, ty);
+            ty += lineGap;
+            this.ctx.font = "17px 'Arial', sans-serif";
+            const p2Lines = [
+                "Arrow keys: move",
+                "1 or Numpad 1: punch   ·   2 or Numpad 2: kick",
+            ];
+            for (const line of p2Lines) {
+                this.ctx.fillText(line, centerX, ty);
+                ty += lineGap;
+            }
+        }
+        const overGot = this.isMouseInRect(gotItX, gotItY, gotItW, gotItH);
+        this.ctx.fillStyle = overGot ? PALETTE.PASTEL_GREEN : PALETTE.WHITE;
+        this.ctx.strokeStyle = PALETTE.OUTLINE;
+        this.ctx.lineWidth = 3;
+        this.ctx.fillRect(gotItX, gotItY, gotItW, gotItH);
+        this.ctx.strokeRect(gotItX, gotItY, gotItW, gotItH);
+        this.ctx.fillStyle = PALETTE.BLACK;
+        this.ctx.font = "bold 18px 'Arial', sans-serif";
+        this.ctx.textAlign = "center";
+        this.ctx.textBaseline = "middle";
+        this.ctx.fillText("GOT IT — START", centerX, gotItY + gotItH / 2);
+        this.ctx.font = "14px 'Arial', sans-serif";
+        this.ctx.fillStyle = "#444444";
+        this.ctx.textBaseline = "bottom";
+        this.ctx.fillText("Enter / G / click the button to begin", centerX, panelY + panelH - 8);
+        this.ctx.textAlign = "left";
+        this.ctx.textBaseline = "alphabetic";
     }
     updateArenaDetails() {
         if (this.menuCooldown !== 0)
@@ -2493,6 +2614,8 @@ class FightingGameEngine {
             this.drawGameOver();
         else if (this.gameState === GameState.HELP)
             this.drawHelp();
+        else if (this.gameState === GameState.CONTROLS_INTRO)
+            this.drawControlsIntro();
         else if (this.gameState === GameState.ARENA_DETAILS)
             this.drawArenaDetails();
         else if (this.gameState === GameState.ARENA_SELECT)
@@ -2516,7 +2639,7 @@ class FightingGameEngine {
         this.ctx.strokeText("WHO WOULD WIN?", centerX, startY);
         this.ctx.fillText("WHO WOULD WIN?", centerX, startY);
         this.ctx.font = "bold 32px 'Arial', sans-serif";
-        const modes = ["1v1 vs CPU", "1v1 PvP", "Back"];
+        const modes = ["1v1 vs CPU", "1v1 PvP"];
         for (let i = 0; i < modes.length; i++) {
             const y = startY + 100 + i * 80;
             const itemWidth = 300;
@@ -3023,5 +3146,6 @@ class FightingGameEngine {
         this.ctx.textBaseline = "alphabetic";
     }
 }
+FightingGameEngine.CONTROLS_INTRO_STORAGE_KEY = "ww_w_seen_controls_intro_v1";
 const game = new FightingGameEngine();
 game.start();
