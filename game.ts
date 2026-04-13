@@ -1531,3 +1531,81 @@ class FighterEntity {
         this.groundOffsetResolved = true;
     }
 }
+
+/** Visible arrow + hitbox; damage via owner.applyStrikeAgainst (one hit then removed). */
+class ArrowProjectile {
+    owner: FighterEntity;
+    attackDef: AttackDefinition;
+    x: number;
+    y: number;
+    vx: number;
+    w: number;
+    h: number;
+    life: number;
+    private readonly struck = new Set<FighterEntity>();
+
+    constructor(owner: FighterEntity, attackDef: AttackDefinition, x: number, y: number, vx: number) {
+        this.owner = owner;
+        this.attackDef = attackDef;
+        this.x = x;
+        this.y = y;
+        this.vx = vx;
+        this.w = 28;
+        this.h = 12;
+        this.life = 96;
+    }
+
+    private bounds(): { x: number; y: number; w: number; h: number } {
+        return { x: this.x - this.w / 2, y: this.y - this.h / 2, w: this.w, h: this.h };
+    }
+
+    private static aabb(
+        a: { x: number; y: number; w: number; h: number },
+        b: { x: number; y: number; w: number; h: number }
+    ): boolean {
+        return a.x < b.x + b.w && a.x + a.w > b.x && a.y < b.y + b.h && a.y + a.h > b.y;
+    }
+
+    /** Returns false when this projectile should be removed. */
+    update(f1: FighterEntity | null, f2: FighterEntity | null): boolean {
+        this.x += this.vx;
+        this.life--;
+        if (this.life <= 0 || this.x < -80 || this.x > SCREEN_WIDTH + 80) return false;
+        const box = this.bounds();
+        const targets: FighterEntity[] = [];
+        if (f1 && f1 !== this.owner) targets.push(f1);
+        if (f2 && f2 !== this.owner) targets.push(f2);
+        for (const t of targets) {
+            if (t.state === FighterState.DEFEATED || this.struck.has(t)) continue;
+            for (const hb of t.getHurtboxesWorld()) {
+                if (!ArrowProjectile.aabb(box, hb)) continue;
+                this.struck.add(t);
+                const ix = (Math.max(box.x, hb.x) + Math.min(box.x + box.w, hb.x + hb.w)) / 2;
+                const iy = (Math.max(box.y, hb.y) + Math.min(box.y + box.h, hb.y + hb.h)) / 2;
+                this.owner.applyStrikeAgainst(t, this.attackDef, ix, iy);
+                return false;
+            }
+        }
+        return true;
+    }
+
+    draw(ctx: CanvasRenderingContext2D) {
+        ctx.save();
+        ctx.translate(this.x, this.y);
+        if (this.vx < 0) ctx.scale(-1, 1);
+        ctx.fillStyle = "#5c3d1e";
+        ctx.strokeStyle = PALETTE.OUTLINE;
+        ctx.lineWidth = 2;
+        ctx.fillRect(-22, -4, 30, 8);
+        ctx.strokeRect(-22, -4, 30, 8);
+        ctx.fillStyle = "#c8c8c8";
+        ctx.beginPath();
+        ctx.moveTo(8, -5);
+        ctx.lineTo(26, 0);
+        ctx.lineTo(8, 5);
+        ctx.closePath();
+        ctx.fill();
+        ctx.stroke();
+        ctx.restore();
+    }
+}

@@ -13,6 +13,13 @@ const GROUND_Y = Math.round(BASE_GROUND_Y * SCALE);
 const STANDARD_FIGHTER_HEIGHT = 380;
 const STANDARD_FIGHTER_WIDTH = 280;
 const FPS = 60;
+/** Heavy attack is a bow shot (projectile) — no melee hitboxes on that move. */
+const RANGED_HEAVY_ATTACK_KEYS = new Set(["Huntress", "Huntress 2"]);
+function usesBowHeavyAttack(spriteKey) {
+    return RANGED_HEAVY_ATTACK_KEYS.has(spriteKey);
+}
+/** Frame (1-based after startAttack) to release arrow; synced to bow draw animation. */
+const BOW_PROJECTILE_RELEASE_FRAME = 10;
 const FIXED_DELTA_TIME = 1 / 60; // timestep for updates
 // Modern Vector Color Palette ( no idea )
 const PALETTE = {
@@ -448,6 +455,8 @@ class FighterEntity {
         this.currentAttackDef = null;
         // One-hit-per-attack tracking
         this.alreadyHitTargets = new Set();
+        /** Set on bow release frame; engine consumes to spawn arrow. */
+        this.pendingProjectileSpawn = false;
         // Visual effects
         this.hitEffects = [];
         this.animFrame = 0; // Animation frame counter
@@ -670,6 +679,11 @@ class FighterEntity {
         if (this.state === FighterState.ATTACKING) {
             this.frameTimer++;
             this.velocityX = 0; // Stop moving while attacking
+            if (this.currentAttackType === AttackType.KICK_HEAVY &&
+                usesBowHeavyAttack(this.config.spriteKey) &&
+                this.frameTimer === BOW_PROJECTILE_RELEASE_FRAME) {
+                this.pendingProjectileSpawn = true;
+            }
             // Check collision every frame during active frames (new canonical system)
             if (this.currentAttackDef) {
                 if (this.getAttackPhase() === AttackPhase.ACTIVE) {
@@ -785,7 +799,8 @@ class FighterEntity {
                     canBeBlocked: true,
                     layer: CollisionLayer.MID
                 };
-            case AttackType.KICK_HEAVY:
+            case AttackType.KICK_HEAVY: {
+                const bow = usesBowHeavyAttack(this.config.spriteKey);
                 return {
                     type: AttackType.KICK_HEAVY,
                     activeStart: 6,
@@ -794,7 +809,7 @@ class FighterEntity {
                     activeFrames: 7,
                     recoveryFrames: 12,
                     totalFrames: 25,
-                    frameData: this.generateDefaultFrameData(AttackType.KICK_HEAVY, 25),
+                    frameData: bow ? this.generateRangedBowHeavyFrameData(25) : this.generateDefaultFrameData(AttackType.KICK_HEAVY, 25),
                     damage: Math.floor(basePower * 1.2),
                     stunTime: 20,
                     knockback: baseKnockback * 1.5,
@@ -803,6 +818,7 @@ class FighterEntity {
                     canBeBlocked: true,
                     layer: CollisionLayer.MID
                 };
+            }
             case AttackType.FINISHER:
                 return {
                     type: AttackType.FINISHER,
@@ -834,9 +850,9 @@ class FighterEntity {
         const hurtboxX = -hurtboxWidthBase / 2;
         const activeStart = type === AttackType.FINISHER ? 8 : (type === AttackType.KICK_HEAVY ? 6 : 5);
         const activeEnd = type === AttackType.FINISHER ? 15 : (type === AttackType.KICK_HEAVY ? 12 : 10);
-        // Weapon depth in screen px → base (was ~0.7× body width in base → ~200px+ “ghost” range).
-        const reachMinPx = type === AttackType.FINISHER ? 56 : (type === AttackType.KICK_HEAVY ? 48 : 40);
-        const reachMaxPx = type === AttackType.FINISHER ? 86 : (type === AttackType.KICK_HEAVY ? 74 : 62);
+        // Weapon reach in screen px (extended so swords/poles overlap defender hurtboxes when sprites touch).
+        const reachMinPx = type === AttackType.FINISHER ? 68 : (type === AttackType.KICK_HEAVY ? 56 : 48);
+        const reachMaxPx = type === AttackType.FINISHER ? 102 : (type === AttackType.KICK_HEAVY ? 88 : 76);
         const reachMinBase = screenToBase(reachMinPx);
         const reachMaxBase = screenToBase(reachMaxPx);
         const baseHeight = type === AttackType.KICK_HEAVY ? bodyHeightBase * 0.3 : bodyHeightBase * 0.34;
@@ -874,12 +890,42 @@ class FighterEntity {
         }
         return frames;
     }
+    /** Bow heavy: same hurtboxes, no melee hitboxes — damage comes from ArrowProjectile. */
+    generateRangedBowHeavyFrameData(totalFrames) {
+        const frames = [];
+        const bodyHeightBase = screenToBase(this.height);
+        const bodyWidthBase = screenToBase(this.width);
+        const hurtboxWidthBase = bodyWidthBase * 0.65;
+        const hurtboxX = -hurtboxWidthBase / 2;
+        for (let frame = 0; frame < totalFrames; frame++) {
+            frames.push({
+                frame,
+                hitboxes: [],
+                hurtboxes: [{
+                        x: hurtboxX,
+                        y: -bodyHeightBase,
+                        width: hurtboxWidthBase,
+                        height: bodyHeightBase,
+                        layer: CollisionLayer.SCAN
+                    }]
+            });
+        }
+        return frames;
+    }
+    /** Engine reads once to spawn arrow; clears the flag. */
+    takePendingProjectileSpawn() {
+        if (!this.pendingProjectileSpawn)
+            return false;
+        this.pendingProjectileSpawn = false;
+        return true;
+    }
     startAttack(type) {
         this.state = FighterState.ATTACKING;
         this.frameTimer = 0;
         this.currentAttackType = type;
         this.currentAttackDef = this.getAttackDefinition(type);
         this.alreadyHitTargets.clear(); // Reset hit tracking
+        this.pendingProjectileSpawn = false;
         this.animFrame = 0;
         console.log(`${this.config.name} used ${AttackType[type]}`);
         if (type === AttackType.FINISHER) {
@@ -993,15 +1039,6 @@ class FighterEntity {
         if (this.alreadyHitTargets.has(opponent)) {
             return;
         }
-        // Melee sanity: skip if forward faces are farther apart than longest possible hit extension.
-        const maxWeaponPx = 100;
-        const myR = this.x + this.width;
-        const opL = opponent.x;
-        const opR = opponent.x + opponent.width;
-        const myL = this.x;
-        const gap = this.facingRight ? opL - myR : myL - opR;
-        if (gap > maxWeaponPx + 12)
-            return;
         const { hitboxes } = this.getCurrentFrameCollisionBoxes();
         const defenderHurts = opponent.getHurtboxesWorld();
         for (const hitbox of hitboxes) {
@@ -1024,6 +1061,13 @@ class FighterEntity {
                 return;
             }
         }
+    }
+    /** Projectile hit uses the same block / damage / combo rules as melee processHit. */
+    applyStrikeAgainst(opponent, attackDef, impactX, impactY) {
+        const prev = this.currentAttackDef;
+        this.currentAttackDef = attackDef;
+        this.processHit(opponent, impactX, impactY);
+        this.currentAttackDef = prev;
     }
     processHit(opponent, impactX, impactY) {
         var _a, _b;
@@ -1255,6 +1299,73 @@ class FighterEntity {
 }
 FighterEntity.groundSampleCanvas = null;
 FighterEntity.groundSampleCtx = null;
+/** Visible arrow + hitbox; damage via owner.applyStrikeAgainst (one hit then removed). */
+class ArrowProjectile {
+    constructor(owner, attackDef, x, y, vx) {
+        this.struck = new Set();
+        this.owner = owner;
+        this.attackDef = attackDef;
+        this.x = x;
+        this.y = y;
+        this.vx = vx;
+        this.w = 28;
+        this.h = 12;
+        this.life = 96;
+    }
+    bounds() {
+        return { x: this.x - this.w / 2, y: this.y - this.h / 2, w: this.w, h: this.h };
+    }
+    static aabb(a, b) {
+        return a.x < b.x + b.w && a.x + a.w > b.x && a.y < b.y + b.h && a.y + a.h > b.y;
+    }
+    /** Returns false when this projectile should be removed. */
+    update(f1, f2) {
+        this.x += this.vx;
+        this.life--;
+        if (this.life <= 0 || this.x < -80 || this.x > SCREEN_WIDTH + 80)
+            return false;
+        const box = this.bounds();
+        const targets = [];
+        if (f1 && f1 !== this.owner)
+            targets.push(f1);
+        if (f2 && f2 !== this.owner)
+            targets.push(f2);
+        for (const t of targets) {
+            if (t.state === FighterState.DEFEATED || this.struck.has(t))
+                continue;
+            for (const hb of t.getHurtboxesWorld()) {
+                if (!ArrowProjectile.aabb(box, hb))
+                    continue;
+                this.struck.add(t);
+                const ix = (Math.max(box.x, hb.x) + Math.min(box.x + box.w, hb.x + hb.w)) / 2;
+                const iy = (Math.max(box.y, hb.y) + Math.min(box.y + box.h, hb.y + hb.h)) / 2;
+                this.owner.applyStrikeAgainst(t, this.attackDef, ix, iy);
+                return false;
+            }
+        }
+        return true;
+    }
+    draw(ctx) {
+        ctx.save();
+        ctx.translate(this.x, this.y);
+        if (this.vx < 0)
+            ctx.scale(-1, 1);
+        ctx.fillStyle = "#5c3d1e";
+        ctx.strokeStyle = PALETTE.OUTLINE;
+        ctx.lineWidth = 2;
+        ctx.fillRect(-22, -4, 30, 8);
+        ctx.strokeRect(-22, -4, 30, 8);
+        ctx.fillStyle = "#c8c8c8";
+        ctx.beginPath();
+        ctx.moveTo(8, -5);
+        ctx.lineTo(26, 0);
+        ctx.lineTo(8, 5);
+        ctx.closePath();
+        ctx.fill();
+        ctx.stroke();
+        ctx.restore();
+    }
+}
 // ─── Types ──────────────────────────────────────────────────────────────────
 // ─── InputHandler ────────────────────────────────────────────────────────────
 /** Key → action mappings for each player configuration. */
@@ -1531,6 +1642,7 @@ class FightingGameEngine {
         this.player2Input = null;
         this.fighter1 = null;
         this.fighter2 = null;
+        this.activeProjectiles = [];
         this.gameState = GameState.MENU;
         this.gameMode = GameMode.OneVsOneAI;
         this.menuSelection = 0;
@@ -1614,9 +1726,22 @@ class FightingGameEngine {
         this.canvas.style.width = `${dw}px`;
         this.canvas.style.height = `${dh}px`;
     }
+    clearProjectiles() {
+        this.activeProjectiles.length = 0;
+    }
+    spawnArrow(owner) {
+        const def = owner.currentAttackDef && owner.currentAttackDef.type === AttackType.KICK_HEAVY
+            ? owner.currentAttackDef
+            : owner.getAttackDefinition(AttackType.KICK_HEAVY);
+        const y = GROUND_Y - owner.height * 0.55;
+        const tipX = owner.facingRight ? owner.x + owner.width * 0.9 : owner.x + owner.width * 0.1;
+        const vx = owner.facingRight ? 12 : -12;
+        this.activeProjectiles.push(new ArrowProjectile(owner, def, tipX, y, vx));
+    }
     startFight() {
         if (!this.fighter1 || !this.fighter2)
             return;
+        this.clearProjectiles();
         this.lastRoundWasDraw = false;
         this.roundTimeFrames = this.roundDurationSeconds * FPS;
         this.fighter1.hp = this.fighter1.maxHp;
@@ -1657,6 +1782,7 @@ class FightingGameEngine {
             else if (p2DamageTaken < p1DamageTaken)
                 this.p2Wins++;
             this.roundEndTimer = 180;
+            this.clearProjectiles();
             this.gameState = GameState.ROUND_END;
             if (this.p1Wins >= 2 || this.p2Wins >= 2)
                 this.beginGameOver();
@@ -1666,12 +1792,14 @@ class FightingGameEngine {
             this.lastRoundWasDraw = false;
             this.p2Wins++;
             this.roundEndTimer = 180;
+            this.clearProjectiles();
             this.gameState = GameState.ROUND_END;
         }
         else if (this.fighter2.state === FighterState.DEFEATED) {
             this.lastRoundWasDraw = false;
             this.p1Wins++;
             this.roundEndTimer = 180;
+            this.clearProjectiles();
             this.gameState = GameState.ROUND_END;
         }
         if (this.p1Wins >= 2 || this.p2Wins >= 2)
@@ -1694,7 +1822,16 @@ class FightingGameEngine {
         this.gameOverNavCooldown = 0;
         this.menuCooldown = 25;
     }
-    returnToMenu() { this.fighter1 = null; this.fighter2 = null; this.player2Input = null; this.arenaSelection = 0; this.gameState = GameState.MENU; this.menuSelection = 0; this.resetMatch(); }
+    returnToMenu() {
+        this.fighter1 = null;
+        this.fighter2 = null;
+        this.clearProjectiles();
+        this.player2Input = null;
+        this.arenaSelection = 0;
+        this.gameState = GameState.MENU;
+        this.menuSelection = 0;
+        this.resetMatch();
+    }
     start() { setInterval(() => this.gameLoop(), 1000 / FPS); }
     gameLoop() { this.update(); this.draw(); }
     update() {
@@ -2287,6 +2424,7 @@ class FightingGameEngine {
     returnToRoster() {
         this.fighter1 = null;
         this.fighter2 = null;
+        this.clearProjectiles();
         this.player2Input = null;
         this.gameState = GameState.CHARACTER_SELECT_P1;
         this.p1Selection = 0;
@@ -2376,6 +2514,15 @@ class FightingGameEngine {
         }
         this.fighter1.update(this.player1Input.keys, this.fighter2, this.player1Input);
         this.fighter2.update(fighter2Input, this.fighter1, fighter2Handler);
+        if (this.fighter1.takePendingProjectileSpawn())
+            this.spawnArrow(this.fighter1);
+        if (this.fighter2.takePendingProjectileSpawn())
+            this.spawnArrow(this.fighter2);
+        for (let i = this.activeProjectiles.length - 1; i >= 0; i--) {
+            if (!this.activeProjectiles[i].update(this.fighter1, this.fighter2)) {
+                this.activeProjectiles.splice(i, 1);
+            }
+        }
         this.fighter1.updateEffects();
         this.fighter2.updateEffects();
         if (this.roundTimeFrames > 0)
@@ -2996,8 +3143,13 @@ class FightingGameEngine {
         this.ctx.lineTo(SCREEN_WIDTH, GROUND_Y);
         this.ctx.stroke();
         if (this.fighter1 && this.fighter2) {
-            this.fighter2.draw(this.ctx);
-            this.fighter1.draw(this.ctx);
+            const back = this.fighter1.x <= this.fighter2.x ? this.fighter1 : this.fighter2;
+            const front = back === this.fighter1 ? this.fighter2 : this.fighter1;
+            back.draw(this.ctx);
+            front.draw(this.ctx);
+        }
+        for (const p of this.activeProjectiles) {
+            p.draw(this.ctx);
         }
     }
     drawFighting() {

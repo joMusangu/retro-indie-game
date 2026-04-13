@@ -12,6 +12,7 @@ class FightingGameEngine {
     aiController: AIController;
     fighter1: FighterEntity | null = null;
     fighter2: FighterEntity | null = null;
+    activeProjectiles: ArrowProjectile[] = [];
     gameState: GameState = GameState.MENU;
     gameMode: GameMode = GameMode.OneVsOneAI;
     menuSelection: number = 0;
@@ -97,8 +98,24 @@ class FightingGameEngine {
         this.canvas.style.height = `${dh}px`;
     }
 
+    private clearProjectiles() {
+        this.activeProjectiles.length = 0;
+    }
+
+    private spawnArrow(owner: FighterEntity) {
+        const def =
+            owner.currentAttackDef && owner.currentAttackDef.type === AttackType.KICK_HEAVY
+                ? owner.currentAttackDef
+                : owner.getAttackDefinition(AttackType.KICK_HEAVY);
+        const y = GROUND_Y - owner.height * 0.55;
+        const tipX = owner.facingRight ? owner.x + owner.width * 0.9 : owner.x + owner.width * 0.1;
+        const vx = owner.facingRight ? 12 : -12;
+        this.activeProjectiles.push(new ArrowProjectile(owner, def, tipX, y, vx));
+    }
+
     startFight() {
         if (!this.fighter1 || !this.fighter2) return;
+        this.clearProjectiles();
         this.lastRoundWasDraw = false;
         this.roundTimeFrames = this.roundDurationSeconds * FPS;
         this.fighter1.hp = this.fighter1.maxHp;
@@ -136,16 +153,21 @@ class FightingGameEngine {
             if (p1DamageTaken < p2DamageTaken) this.p1Wins++;
             else if (p2DamageTaken < p1DamageTaken) this.p2Wins++;
             this.roundEndTimer = 180;
+            this.clearProjectiles();
             this.gameState = GameState.ROUND_END;
             if (this.p1Wins >= 2 || this.p2Wins >= 2) this.beginGameOver();
             return;
         }
         if (this.fighter1.state === FighterState.DEFEATED) {
             this.lastRoundWasDraw = false;
-            this.p2Wins++; this.roundEndTimer = 180; this.gameState = GameState.ROUND_END;
+            this.p2Wins++; this.roundEndTimer = 180;
+            this.clearProjectiles();
+            this.gameState = GameState.ROUND_END;
         } else if (this.fighter2.state === FighterState.DEFEATED) {
             this.lastRoundWasDraw = false;
-            this.p1Wins++; this.roundEndTimer = 180; this.gameState = GameState.ROUND_END;
+            this.p1Wins++; this.roundEndTimer = 180;
+            this.clearProjectiles();
+            this.gameState = GameState.ROUND_END;
         }
         if (this.p1Wins >= 2 || this.p2Wins >= 2) this.beginGameOver();
     }
@@ -169,7 +191,16 @@ class FightingGameEngine {
         this.menuCooldown = 25;
     }
 
-    returnToMenu() { this.fighter1 = null; this.fighter2 = null; this.player2Input = null; this.arenaSelection = 0; this.gameState = GameState.MENU; this.menuSelection = 0; this.resetMatch(); }
+    returnToMenu() {
+        this.fighter1 = null;
+        this.fighter2 = null;
+        this.clearProjectiles();
+        this.player2Input = null;
+        this.arenaSelection = 0;
+        this.gameState = GameState.MENU;
+        this.menuSelection = 0;
+        this.resetMatch();
+    }
     start() { setInterval(() => this.gameLoop(), 1000 / FPS); }
     gameLoop() { this.update(); this.draw(); }
 
@@ -691,6 +722,7 @@ class FightingGameEngine {
     private returnToRoster() {
         this.fighter1 = null;
         this.fighter2 = null;
+        this.clearProjectiles();
         this.player2Input = null;
         this.gameState = GameState.CHARACTER_SELECT_P1;
         this.p1Selection = 0;
@@ -780,6 +812,13 @@ class FightingGameEngine {
         }
         this.fighter1.update(this.player1Input.keys, this.fighter2, this.player1Input);
         this.fighter2.update(fighter2Input, this.fighter1, fighter2Handler);
+        if (this.fighter1.takePendingProjectileSpawn()) this.spawnArrow(this.fighter1);
+        if (this.fighter2.takePendingProjectileSpawn()) this.spawnArrow(this.fighter2);
+        for (let i = this.activeProjectiles.length - 1; i >= 0; i--) {
+            if (!this.activeProjectiles[i].update(this.fighter1, this.fighter2)) {
+                this.activeProjectiles.splice(i, 1);
+            }
+        }
         this.fighter1.updateEffects();
         this.fighter2.updateEffects();
         if (this.roundTimeFrames > 0) this.roundTimeFrames--;
@@ -1420,8 +1459,13 @@ class FightingGameEngine {
         this.ctx.lineTo(SCREEN_WIDTH, GROUND_Y);
         this.ctx.stroke();
         if (this.fighter1 && this.fighter2) {
-            this.fighter2.draw(this.ctx);
-            this.fighter1.draw(this.ctx);
+            const back = this.fighter1.x <= this.fighter2.x ? this.fighter1 : this.fighter2;
+            const front = back === this.fighter1 ? this.fighter2 : this.fighter1;
+            back.draw(this.ctx);
+            front.draw(this.ctx);
+        }
+        for (const p of this.activeProjectiles) {
+            p.draw(this.ctx);
         }
     }
 
