@@ -1520,25 +1520,6 @@ class InputHandler {
         if (playerAction)
             this.keys[playerAction] = pressed;
     }
-    /** OR touch / on-screen controls into keyboard state (call before updateFrame each tick). */
-    applyExternalKeys(overlay) {
-        if (overlay.up)
-            this.keys.up = true;
-        if (overlay.down)
-            this.keys.down = true;
-        if (overlay.left)
-            this.keys.left = true;
-        if (overlay.right)
-            this.keys.right = true;
-        if (overlay.btnA)
-            this.keys.btnA = true;
-        if (overlay.btnB)
-            this.keys.btnB = true;
-        if (overlay.help)
-            this.keys.help = true;
-        if (overlay.pause)
-            this.keys.pause = true;
-    }
     updateFrame() {
         this.inputBuffer.push({
             direction: this.getDirectionCode(),
@@ -1772,7 +1753,6 @@ class FightingGameEngine {
         /** After opening pause with ESC held, ignore resume until ESC is released (prevents instant close). */
         this.pauseIgnoreEscUntilRelease = false;
         this.pauseNavCooldown = 0;
-        this.mobileFightPointers = new Map();
         this.canvas = document.getElementById('gameCanvas');
         this.canvas.width = SCREEN_WIDTH;
         this.canvas.height = SCREEN_HEIGHT;
@@ -1801,42 +1781,6 @@ class FightingGameEngine {
             if (this.gameState === GameState.CHARACTER_SELECT_P1 || this.gameState === GameState.CHARACTER_SELECT_P2)
                 e.preventDefault();
         }, { passive: false });
-        this.mobileFightUi = typeof window !== "undefined" && (window.matchMedia("(pointer: coarse)").matches ||
-            (navigator.maxTouchPoints > 0 && window.innerWidth <= 1024));
-        this.canvas.addEventListener("pointerdown", (e) => {
-            const { x, y } = this.clientToCanvas(e.clientX, e.clientY);
-            this.mouseX = x;
-            this.mouseY = y;
-            if (e.pointerType === "touch" || e.pointerType === "pen")
-                this.mouseClicked = true;
-            if (this.mobileFightUi && this.gameState === GameState.FIGHTING) {
-                const hit = this.findMobileFightZoneAt(x, y);
-                if (hit) {
-                    this.mobileFightPointers.set(e.pointerId, hit);
-                    try {
-                        this.canvas.setPointerCapture(e.pointerId);
-                    }
-                    catch ( /* noop */_a) { /* noop */ }
-                    e.preventDefault();
-                }
-            }
-        });
-        this.canvas.addEventListener("pointermove", (e) => {
-            if (!this.mobileFightPointers.has(e.pointerId))
-                return;
-            const { x, y } = this.clientToCanvas(e.clientX, e.clientY);
-            const hit = this.findMobileFightZoneAt(x, y);
-            if (hit)
-                this.mobileFightPointers.set(e.pointerId, hit);
-            else
-                this.mobileFightPointers.delete(e.pointerId);
-            e.preventDefault();
-        });
-        const endMobileFightPointer = (e) => {
-            this.mobileFightPointers.delete(e.pointerId);
-        };
-        this.canvas.addEventListener("pointerup", endMobileFightPointer);
-        this.canvas.addEventListener("pointercancel", endMobileFightPointer);
         this.ctx = this.canvas.getContext('2d', { alpha: true, desynchronized: false });
         this.ctx.imageSmoothingEnabled = true;
         this.ctx.webkitImageSmoothingEnabled = true;
@@ -1852,71 +1796,6 @@ class FightingGameEngine {
         spriteLoader.loadSprite(ARENA_SPRITESHEET_PATH);
     }
     /** Scale canvas CSS size to fit the window; drawing stays at SCREEN_WIDTH × SCREEN_HEIGHT. */
-    clientToCanvas(clientX, clientY) {
-        const rect = this.canvas.getBoundingClientRect();
-        const scaleX = this.canvas.width / rect.width;
-        const scaleY = this.canvas.height / rect.height;
-        return {
-            x: (clientX - rect.left) * scaleX,
-            y: (clientY - rect.top) * scaleY,
-        };
-    }
-    getMobileFightZoneDefs() {
-        const zones = [
-            { x: 28, y: 704, w: 58, h: 58, label: "\u25C0", p1: { left: true } },
-            { x: 92, y: 640, w: 58, h: 58, label: "\u25B2", p1: { up: true } },
-            { x: 156, y: 704, w: 58, h: 58, label: "\u25B6", p1: { right: true } },
-            { x: 92, y: 704, w: 58, h: 58, label: "\u25BC", p1: { down: true } },
-        ];
-        if (this.gameMode === GameMode.OneVsOnePvP && this.player2Input) {
-            zones.push({ x: 232, y: 672, w: 76, h: 76, label: "P", p1: { btnA: true } }, { x: 308, y: 672, w: 76, h: 76, label: "K", p1: { btnB: true } }, { x: 392, y: 672, w: 76, h: 76, label: "P", p2: { btnA: true } }, { x: 468, y: 672, w: 76, h: 76, label: "K", p2: { btnB: true } }, { x: 556, y: 704, w: 58, h: 58, label: "\u25C0", p2: { left: true } }, { x: 620, y: 640, w: 58, h: 58, label: "\u25B2", p2: { up: true } }, { x: 684, y: 704, w: 58, h: 58, label: "\u25B6", p2: { right: true } }, { x: 620, y: 704, w: 58, h: 58, label: "\u25BC", p2: { down: true } });
-        }
-        else {
-            zones.push({ x: 512, y: 668, w: 92, h: 92, label: "P", p1: { btnA: true } }, { x: 628, y: 668, w: 92, h: 92, label: "K", p1: { btnB: true } });
-        }
-        zones.push({ x: SCREEN_WIDTH / 2 - 30, y: 704, w: 60, h: 56, label: "II", p1: { pause: true } });
-        return zones;
-    }
-    findMobileFightZoneAt(cx, cy) {
-        for (const z of this.getMobileFightZoneDefs()) {
-            if (cx >= z.x && cx <= z.x + z.w && cy >= z.y && cy <= z.y + z.h) {
-                const o = {};
-                if (z.p1)
-                    o.p1 = z.p1;
-                if (z.p2)
-                    o.p2 = z.p2;
-                return o;
-            }
-        }
-        return null;
-    }
-    applyMobileFightInputMerge() {
-        if (!this.mobileFightUi || this.gameState !== GameState.FIGHTING)
-            return;
-        for (const z of this.mobileFightPointers.values()) {
-            if (z.p1)
-                this.player1Input.applyExternalKeys(z.p1);
-            if (z.p2 && this.player2Input)
-                this.player2Input.applyExternalKeys(z.p2);
-        }
-    }
-    drawMobileFightControls() {
-        const zones = this.getMobileFightZoneDefs();
-        for (const z of zones) {
-            this.ctx.fillStyle = "rgba(255,255,255,0.24)";
-            this.ctx.strokeStyle = PALETTE.OUTLINE;
-            this.ctx.lineWidth = 3;
-            this.ctx.fillRect(z.x, z.y, z.w, z.h);
-            this.ctx.strokeRect(z.x, z.y, z.w, z.h);
-            this.ctx.fillStyle = "#111111";
-            this.ctx.font = z.label.length <= 2 ? "bold 26px Arial, sans-serif" : "bold 22px Arial, sans-serif";
-            this.ctx.textAlign = "center";
-            this.ctx.textBaseline = "middle";
-            this.ctx.fillText(z.label, z.x + z.w / 2, z.y + z.h / 2 + 1);
-        }
-        this.ctx.textAlign = "left";
-        this.ctx.textBaseline = "alphabetic";
-    }
     layoutCanvasToViewport() {
         const iw = SCREEN_WIDTH;
         const ih = SCREEN_HEIGHT;
@@ -2041,10 +1920,6 @@ class FightingGameEngine {
     start() { setInterval(() => this.gameLoop(), 1000 / FPS); }
     gameLoop() { this.update(); this.draw(); }
     update() {
-        if (this.gameState !== GameState.FIGHTING)
-            this.mobileFightPointers.clear();
-        else
-            this.applyMobileFightInputMerge();
         this.player1Input.updateFrame();
         if (this.player2Input)
             this.player2Input.updateFrame();
@@ -3366,8 +3241,6 @@ class FightingGameEngine {
         this.drawArenaGroundAndFighters();
         if (this.fighter1 && this.fighter2)
             this.drawUI(this.fighter1, this.fighter2);
-        if (this.mobileFightUi && this.gameState === GameState.FIGHTING)
-            this.drawMobileFightControls();
     }
     drawPaused() {
         this.ctx.fillStyle = "rgba(0,0,0,0.72)";

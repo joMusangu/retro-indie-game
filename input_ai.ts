@@ -96,18 +96,6 @@ class InputHandler {
         if (playerAction) this.keys[playerAction] = pressed;
     }
 
-    /** OR touch / on-screen controls into keyboard state (call before updateFrame each tick). */
-    applyExternalKeys(overlay: Partial<InputState>): void {
-        if (overlay.up) this.keys.up = true;
-        if (overlay.down) this.keys.down = true;
-        if (overlay.left) this.keys.left = true;
-        if (overlay.right) this.keys.right = true;
-        if (overlay.btnA) this.keys.btnA = true;
-        if (overlay.btnB) this.keys.btnB = true;
-        if (overlay.help) this.keys.help = true;
-        if (overlay.pause) this.keys.pause = true;
-    }
-
     updateFrame(): void {
         this.inputBuffer.push({
             direction: this.getDirectionCode(),

@@ -39,10 +39,6 @@ class FightingGameEngine {
     pauseIgnoreEscUntilRelease: boolean = false;
     private pauseNavCooldown: number = 0;
 
-    /** On-screen controls for touch / coarse-pointer devices. */
-    private readonly mobileFightUi: boolean;
-    private mobileFightPointers = new Map<number, { p1?: Partial<InputState>; p2?: Partial<InputState> }>();
-
     constructor() {
         this.canvas = document.getElementById('gameCanvas') as HTMLCanvasElement;
         this.canvas.width = SCREEN_WIDTH;
@@ -71,41 +67,6 @@ class FightingGameEngine {
             // Roster is now full-screen and non-scrollable.
             if (this.gameState === GameState.CHARACTER_SELECT_P1 || this.gameState === GameState.CHARACTER_SELECT_P2) e.preventDefault();
         }, { passive: false });
-
-        this.mobileFightUi = typeof window !== "undefined" && (
-            window.matchMedia("(pointer: coarse)").matches ||
-            (navigator.maxTouchPoints > 0 && window.innerWidth <= 1024)
-        );
-
-        this.canvas.addEventListener("pointerdown", (e: PointerEvent) => {
-            const { x, y } = this.clientToCanvas(e.clientX, e.clientY);
-            this.mouseX = x;
-            this.mouseY = y;
-            if (e.pointerType === "touch" || e.pointerType === "pen") this.mouseClicked = true;
-
-            if (this.mobileFightUi && this.gameState === GameState.FIGHTING) {
-                const hit = this.findMobileFightZoneAt(x, y);
-                if (hit) {
-                    this.mobileFightPointers.set(e.pointerId, hit);
-                    try { this.canvas.setPointerCapture(e.pointerId); } catch { /* noop */ }
-                    e.preventDefault();
-                }
-            }
-        });
-        this.canvas.addEventListener("pointermove", (e: PointerEvent) => {
-            if (!this.mobileFightPointers.has(e.pointerId)) return;
-            const { x, y } = this.clientToCanvas(e.clientX, e.clientY);
-            const hit = this.findMobileFightZoneAt(x, y);
-            if (hit) this.mobileFightPointers.set(e.pointerId, hit);
-            else this.mobileFightPointers.delete(e.pointerId);
-            e.preventDefault();
-        });
-        const endMobileFightPointer = (e: PointerEvent) => {
-            this.mobileFightPointers.delete(e.pointerId);
-        };
-        this.canvas.addEventListener("pointerup", endMobileFightPointer);
-        this.canvas.addEventListener("pointercancel", endMobileFightPointer);
-
         this.ctx = this.canvas.getContext('2d', { alpha: true, desynchronized: false })!;
         this.ctx.imageSmoothingEnabled = true;
         (this.ctx as any).webkitImageSmoothingEnabled = true;
@@ -121,88 +82,6 @@ class FightingGameEngine {
     }
 
     /** Scale canvas CSS size to fit the window; drawing stays at SCREEN_WIDTH × SCREEN_HEIGHT. */
-    private clientToCanvas(clientX: number, clientY: number): { x: number; y: number } {
-        const rect = this.canvas.getBoundingClientRect();
-        const scaleX = this.canvas.width / rect.width;
-        const scaleY = this.canvas.height / rect.height;
-        return {
-            x: (clientX - rect.left) * scaleX,
-            y: (clientY - rect.top) * scaleY,
-        };
-    }
-
-    private getMobileFightZoneDefs(): Array<{
-        x: number; y: number; w: number; h: number; label: string;
-        p1?: Partial<InputState>; p2?: Partial<InputState>;
-    }> {
-        const zones: Array<{
-            x: number; y: number; w: number; h: number; label: string;
-            p1?: Partial<InputState>; p2?: Partial<InputState>;
-        }> = [
-            { x: 28, y: 704, w: 58, h: 58, label: "\u25C0", p1: { left: true } },
-            { x: 92, y: 640, w: 58, h: 58, label: "\u25B2", p1: { up: true } },
-            { x: 156, y: 704, w: 58, h: 58, label: "\u25B6", p1: { right: true } },
-            { x: 92, y: 704, w: 58, h: 58, label: "\u25BC", p1: { down: true } },
-        ];
-        if (this.gameMode === GameMode.OneVsOnePvP && this.player2Input) {
-            zones.push(
-                { x: 232, y: 672, w: 76, h: 76, label: "P", p1: { btnA: true } },
-                { x: 308, y: 672, w: 76, h: 76, label: "K", p1: { btnB: true } },
-                { x: 392, y: 672, w: 76, h: 76, label: "P", p2: { btnA: true } },
-                { x: 468, y: 672, w: 76, h: 76, label: "K", p2: { btnB: true } },
-                { x: 556, y: 704, w: 58, h: 58, label: "\u25C0", p2: { left: true } },
-                { x: 620, y: 640, w: 58, h: 58, label: "\u25B2", p2: { up: true } },
-                { x: 684, y: 704, w: 58, h: 58, label: "\u25B6", p2: { right: true } },
-                { x: 620, y: 704, w: 58, h: 58, label: "\u25BC", p2: { down: true } },
-            );
-        } else {
-            zones.push(
-                { x: 512, y: 668, w: 92, h: 92, label: "P", p1: { btnA: true } },
-                { x: 628, y: 668, w: 92, h: 92, label: "K", p1: { btnB: true } },
-            );
-        }
-        zones.push({ x: SCREEN_WIDTH / 2 - 30, y: 704, w: 60, h: 56, label: "II", p1: { pause: true } });
-        return zones;
-    }
-
-    private findMobileFightZoneAt(cx: number, cy: number): { p1?: Partial<InputState>; p2?: Partial<InputState> } | null {
-        for (const z of this.getMobileFightZoneDefs()) {
-            if (cx >= z.x && cx <= z.x + z.w && cy >= z.y && cy <= z.y + z.h) {
-                const o: { p1?: Partial<InputState>; p2?: Partial<InputState> } = {};
-                if (z.p1) o.p1 = z.p1;
-                if (z.p2) o.p2 = z.p2;
-                return o;
-            }
-        }
-        return null;
-    }
-
-    private applyMobileFightInputMerge(): void {
-        if (!this.mobileFightUi || this.gameState !== GameState.FIGHTING) return;
-        for (const z of this.mobileFightPointers.values()) {
-            if (z.p1) this.player1Input.applyExternalKeys(z.p1);
-            if (z.p2 && this.player2Input) this.player2Input.applyExternalKeys(z.p2);
-        }
-    }
-
-    private drawMobileFightControls(): void {
-        const zones = this.getMobileFightZoneDefs();
-        for (const z of zones) {
-            this.ctx.fillStyle = "rgba(255,255,255,0.24)";
-            this.ctx.strokeStyle = PALETTE.OUTLINE;
-            this.ctx.lineWidth = 3;
-            this.ctx.fillRect(z.x, z.y, z.w, z.h);
-            this.ctx.strokeRect(z.x, z.y, z.w, z.h);
-            this.ctx.fillStyle = "#111111";
-            this.ctx.font = z.label.length <= 2 ? "bold 26px Arial, sans-serif" : "bold 22px Arial, sans-serif";
-            this.ctx.textAlign = "center";
-            this.ctx.textBaseline = "middle";
-            this.ctx.fillText(z.label, z.x + z.w / 2, z.y + z.h / 2 + 1);
-        }
-        this.ctx.textAlign = "left";
-        this.ctx.textBaseline = "alphabetic";
-    }
-
     private layoutCanvasToViewport(): void {
         const iw = SCREEN_WIDTH;
         const ih = SCREEN_HEIGHT;
@@ -326,8 +205,6 @@ class FightingGameEngine {
     gameLoop() { this.update(); this.draw(); }
 
     update() {
-        if (this.gameState !== GameState.FIGHTING) this.mobileFightPointers.clear();
-        else this.applyMobileFightInputMerge();
         this.player1Input.updateFrame();
         if (this.player2Input) this.player2Input.updateFrame();
         if (this.menuCooldown > 0) this.menuCooldown--;
@@ -1595,7 +1472,6 @@ class FightingGameEngine {
     drawFighting() {
         this.drawArenaGroundAndFighters();
         if (this.fighter1 && this.fighter2) this.drawUI(this.fighter1, this.fighter2);
-        if (this.mobileFightUi && this.gameState === GameState.FIGHTING) this.drawMobileFightControls();
     }
 
     drawPaused() {
