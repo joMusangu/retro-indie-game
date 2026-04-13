@@ -1,4 +1,32 @@
 "use strict";
+/**
+ * Central collision tuning for this engine.
+ *
+ * Godot analogy (from project.godot):
+ * - `layer_names/2d_physics/layer_1="game world"` → static stage / push volumes (future).
+ * - `layer_names/2d_physics/layer_2="hitboxes"`    → attack hitboxes.
+ *
+ * Godot pairs **collision_layer** (what I am) with **collision_mask** (what I collide with).
+ * Here we use `CollisionLayer` + `layerMask` bitflags on each `CollisionBox` (see `layerToBit` in game.ts).
+ *
+ * Edit reach / fractions here instead of inside `generateDefaultFrameData`.
+ */
+const ENGINE_COLLISION = {
+    /**
+     * Hitbox rect leading edge: distance from feet pivot along facing, as a fraction of sprite width.
+     * 0.5 = aligned with the right edge of the fighter AABB (previous default).
+     * Lower than 0.5 = leading edge starts farther left (more overlap with own sprite), shortening how far the attack extends past the art.
+     */
+    hitboxStartFromPivotWidthFraction: 0.44,
+    /** Horizontal reach (depth) in **screen pixels** — forward extension of the hitbox after the leading edge. */
+    reachPx: {
+        punch: { min: 24, max: 38 },
+        heavy: { min: 32, max: 48 },
+        finisher: { min: 40, max: 62 },
+    },
+    /** Defender hurtbox width as a fraction of fighter width (narrower = must be closer to connect). */
+    hurtboxWidthFactor: 0.58,
+};
 const BASE_WIDTH = 1920;
 const BASE_HEIGHT = 1080;
 const BASE_GROUND_Y = 860; // the floor (ground level)
@@ -418,6 +446,12 @@ var CollisionLayer;
     CollisionLayer[CollisionLayer["SCAN"] = 4] = "SCAN";
     CollisionLayer[CollisionLayer["PUSH"] = 5] = "PUSH";
 })(CollisionLayer || (CollisionLayer = {}));
+/** Godot `collision_layer` index → single bit (use with `layerMask` on the other body). */
+function collisionLayerToBit(layer) {
+    return 1 << layer;
+}
+/** Default hitbox mask: only strike defender hurtboxes (SCAN), not world/push. */
+const DEFAULT_HITBOX_LAYER_MASK = collisionLayerToBit(CollisionLayer.SCAN);
 // Helper function to convert base coordinates to screen coordinates
 function baseToScreen(baseValue) {
     return Math.round(baseValue * SCALE);
@@ -846,17 +880,22 @@ class FighterEntity {
         const frames = [];
         const bodyHeightBase = screenToBase(this.height);
         const bodyWidthBase = screenToBase(this.width);
-        const hurtboxWidthBase = bodyWidthBase * 0.65;
+        const hw = ENGINE_COLLISION.hurtboxWidthFactor;
+        const hurtboxWidthBase = bodyWidthBase * hw;
         const hurtboxX = -hurtboxWidthBase / 2;
         const activeStart = type === AttackType.FINISHER ? 8 : (type === AttackType.KICK_HEAVY ? 6 : 5);
         const activeEnd = type === AttackType.FINISHER ? 15 : (type === AttackType.KICK_HEAVY ? 12 : 10);
-        // Weapon reach in screen px (extended so swords/poles overlap defender hurtboxes when sprites touch).
-        const reachMinPx = type === AttackType.FINISHER ? 68 : (type === AttackType.KICK_HEAVY ? 56 : 48);
-        const reachMaxPx = type === AttackType.FINISHER ? 102 : (type === AttackType.KICK_HEAVY ? 88 : 76);
-        const reachMinBase = screenToBase(reachMinPx);
-        const reachMaxBase = screenToBase(reachMaxPx);
+        const reachPx = type === AttackType.FINISHER
+            ? ENGINE_COLLISION.reachPx.finisher
+            : type === AttackType.KICK_HEAVY
+                ? ENGINE_COLLISION.reachPx.heavy
+                : ENGINE_COLLISION.reachPx.punch;
+        const reachMinBase = screenToBase(reachPx.min);
+        const reachMaxBase = screenToBase(reachPx.max);
         const baseHeight = type === AttackType.KICK_HEAVY ? bodyHeightBase * 0.3 : bodyHeightBase * 0.34;
         const hitboxY = type === AttackType.KICK_HEAVY ? -bodyHeightBase * 0.45 : -bodyHeightBase * 0.72;
+        /** Leading edge of attack rect from pivot (see ENGINE_COLLISION.hitboxStartFromPivotWidthFraction). */
+        const hitboxX = screenToBase(this.width * ENGINE_COLLISION.hitboxStartFromPivotWidthFraction);
         // One entry per attack frame (must match totalFrames — e.g. FINISHER 32, not hardcoded 20).
         for (let frame = 0; frame < totalFrames; frame++) {
             const hitboxes = [];
@@ -868,14 +907,13 @@ class FighterEntity {
                 const hitboxHeight = baseHeight * (0.9 + 0.2 * Math.sin(Math.PI * t));
                 // IMPORTANT: Frame data is authored in canonical "facing right" space.
                 // transformCollisionBox() handles left-facing mirroring.
-                // x = 0: leading edge from feet-center (forward extension), not inset into the body.
-                const hitboxX = screenToBase(this.width / 2);
                 hitboxes.push({
                     x: hitboxX,
                     y: hitboxY,
                     width: reach,
                     height: hitboxHeight,
-                    layer: type === AttackType.FINISHER ? CollisionLayer.HIGH : CollisionLayer.MID
+                    layer: type === AttackType.FINISHER ? CollisionLayer.HIGH : CollisionLayer.MID,
+                    layerMask: DEFAULT_HITBOX_LAYER_MASK,
                 });
             }
             // Always have a hurtbox (fighter's body)
@@ -884,7 +922,7 @@ class FighterEntity {
                 y: -bodyHeightBase,
                 width: hurtboxWidthBase,
                 height: bodyHeightBase,
-                layer: CollisionLayer.SCAN
+                layer: CollisionLayer.SCAN,
             });
             frames.push({ frame, hitboxes, hurtboxes });
         }
@@ -895,7 +933,7 @@ class FighterEntity {
         const frames = [];
         const bodyHeightBase = screenToBase(this.height);
         const bodyWidthBase = screenToBase(this.width);
-        const hurtboxWidthBase = bodyWidthBase * 0.65;
+        const hurtboxWidthBase = bodyWidthBase * ENGINE_COLLISION.hurtboxWidthFactor;
         const hurtboxX = -hurtboxWidthBase / 2;
         for (let frame = 0; frame < totalFrames; frame++) {
             frames.push({
@@ -951,16 +989,32 @@ class FighterEntity {
     transformCollisionBox(box) {
         const pivotX = this.x + this.width / 2;
         const pivotY = this.getFeetWorldY();
-        // Transform box position (account for facing direction)
-        let boxX = baseToScreen(box.x);
-        if (!this.facingRight) {
-            boxX = -boxX - baseToScreen(box.width); // Flip horizontally
+        const shape = box.shape || "rect";
+        if (shape === "circle") {
+            let centerOffsetX = baseToScreen(box.x);
+            if (!this.facingRight) {
+                centerOffsetX = -centerOffsetX;
+            }
+            return {
+                shape: "circle",
+                x: pivotX + centerOffsetX,
+                y: pivotY - baseToScreen(box.y),
+                r: Math.max(1, baseToScreen(box.radius || 0)),
+                layer: box.layer,
+            };
         }
-        const worldX = pivotX + boxX;
-        const worldY = pivotY - baseToScreen(box.y); // Y is negative up, convert to screen coords
-        const worldW = baseToScreen(box.width);
-        const worldH = baseToScreen(box.height);
-        return { x: worldX, y: worldY, w: worldW, h: worldH };
+        // Transform rect position (account for facing direction)
+        let boxX = baseToScreen(box.x);
+        if (!this.facingRight)
+            boxX = -boxX - baseToScreen(box.width);
+        return {
+            shape: "rect",
+            x: pivotX + boxX,
+            y: pivotY - baseToScreen(box.y),
+            w: baseToScreen(box.width),
+            h: baseToScreen(box.height),
+            layer: box.layer,
+        };
     }
     /**
      * Single tight AABB vs sprite box (inset). Handy for debug/UI; **hit resolution uses
@@ -973,10 +1027,12 @@ class FighterEntity {
         const insetTop = this.height * 0.15;
         const insetBottom = this.height * 0.05;
         return {
+            shape: "rect",
             x: this.x + insetX,
             y: topY + insetTop,
             w: this.width - insetX * 2,
-            h: this.height - insetTop - insetBottom
+            h: this.height - insetTop - insetBottom,
+            layer: CollisionLayer.SCAN,
         };
     }
     /** Defender hurtboxes this frame in screen space (one or more AABBs — any overlap with a hitbox counts). */
@@ -986,17 +1042,45 @@ class FighterEntity {
             return [this.getBodyHurtboxWorld()];
         return hurtboxes.map((hb) => this.transformCollisionBox(hb));
     }
-    /** Axis-aligned rectangle overlap (standard 2D fighting-game hit vs hurt test). */
-    checkAABBCollision(box1, box2) {
-        return box1.x < box2.x + box2.w &&
-            box1.x + box1.w > box2.x &&
-            box1.y < box2.y + box2.h &&
-            box1.y + box1.h > box2.y;
+    static rectRectCollision(a, b) {
+        return a.x < b.x + b.w && a.x + a.w > b.x && a.y < b.y + b.h && a.y + a.h > b.y;
+    }
+    static circleCircleCollision(a, b) {
+        const dx = a.x - b.x;
+        const dy = a.y - b.y;
+        const sumR = a.r + b.r;
+        return (dx * dx + dy * dy) <= (sumR * sumR);
+    }
+    static rectCircleCollision(rect, circle) {
+        const nearestX = Math.max(rect.x, Math.min(circle.x, rect.x + rect.w));
+        const nearestY = Math.max(rect.y, Math.min(circle.y, rect.y + rect.h));
+        const dx = circle.x - nearestX;
+        const dy = circle.y - nearestY;
+        return (dx * dx + dy * dy) <= (circle.r * circle.r);
+    }
+    static checkCollisionOverlap(a, b) {
+        if (a.shape === "rect" && b.shape === "rect")
+            return FighterEntity.rectRectCollision(a, b);
+        if (a.shape === "circle" && b.shape === "circle")
+            return FighterEntity.circleCircleCollision(a, b);
+        if (a.shape === "rect" && b.shape === "circle")
+            return FighterEntity.rectCircleCollision(a, b);
+        return FighterEntity.rectCircleCollision(b, a);
+    }
+    static shapeCenter(shape) {
+        if (shape.shape === "circle")
+            return { x: shape.x, y: shape.y };
+        return { x: shape.x + shape.w / 2, y: shape.y + shape.h / 2 };
+    }
+    static getCollisionImpactPoint(a, b) {
+        const ac = FighterEntity.shapeCenter(a);
+        const bc = FighterEntity.shapeCenter(b);
+        return { x: (ac.x + bc.x) / 2, y: (ac.y + bc.y) / 2 };
     }
     // Get current frame's hitboxes and hurtboxes
     getCurrentFrameCollisionBoxes() {
         const bodyHeightBase = screenToBase(this.height);
-        const bodyWidthBase = screenToBase(this.width * 0.65);
+        const bodyWidthBase = screenToBase(this.width * ENGINE_COLLISION.hurtboxWidthFactor);
         const bodyOffsetX = -bodyWidthBase / 2;
         if (!this.currentAttackDef || this.state !== FighterState.ATTACKING) {
             // Default hurtbox when not attacking
@@ -1029,6 +1113,7 @@ class FighterEntity {
         };
     }
     checkAttackCollision(opponent) {
+        var _a, _b;
         // Only check during active frames
         if (!this.currentAttackDef ||
             this.frameTimer < this.currentAttackDef.activeStart ||
@@ -1043,19 +1128,16 @@ class FighterEntity {
         const defenderHurts = opponent.getHurtboxesWorld();
         for (const hitbox of hitboxes) {
             const worldHitbox = this.transformCollisionBox(hitbox);
+            const strikeMask = (_a = hitbox.layerMask) !== null && _a !== void 0 ? _a : DEFAULT_HITBOX_LAYER_MASK;
             for (const hurt of defenderHurts) {
-                if (!this.checkAABBCollision(worldHitbox, hurt))
+                const hurtLayer = (_b = hurt.layer) !== null && _b !== void 0 ? _b : CollisionLayer.SCAN;
+                if ((strikeMask & collisionLayerToBit(hurtLayer)) === 0)
                     continue;
-                const overlapLeft = Math.max(worldHitbox.x, hurt.x);
-                const overlapTop = Math.max(worldHitbox.y, hurt.y);
-                const overlapRight = Math.min(worldHitbox.x + worldHitbox.w, hurt.x + hurt.w);
-                const overlapBottom = Math.min(worldHitbox.y + worldHitbox.h, hurt.y + hurt.h);
-                const overlapW = overlapRight - overlapLeft;
-                const overlapH = overlapBottom - overlapTop;
-                if (overlapW <= 0 || overlapH <= 0)
+                if (!FighterEntity.checkCollisionOverlap(worldHitbox, hurt))
                     continue;
-                const impactX = overlapLeft + overlapW / 2;
-                const impactY = overlapTop + overlapH / 2;
+                const impact = FighterEntity.getCollisionImpactPoint(worldHitbox, hurt);
+                const impactX = impact.x;
+                const impactY = impact.y;
                 this.processHit(opponent, impactX, impactY);
                 this.alreadyHitTargets.add(opponent);
                 return;
@@ -1315,16 +1397,15 @@ class ArrowProjectile {
     bounds() {
         return { x: this.x - this.w / 2, y: this.y - this.h / 2, w: this.w, h: this.h };
     }
-    static aabb(a, b) {
-        return a.x < b.x + b.w && a.x + a.w > b.x && a.y < b.y + b.h && a.y + a.h > b.y;
-    }
     /** Returns false when this projectile should be removed. */
     update(f1, f2) {
+        var _a;
         this.x += this.vx;
         this.life--;
         if (this.life <= 0 || this.x < -80 || this.x > SCREEN_WIDTH + 80)
             return false;
         const box = this.bounds();
+        const projectileShape = { shape: "rect", x: box.x, y: box.y, w: box.w, h: box.h };
         const targets = [];
         if (f1 && f1 !== this.owner)
             targets.push(f1);
@@ -1334,11 +1415,15 @@ class ArrowProjectile {
             if (t.state === FighterState.DEFEATED || this.struck.has(t))
                 continue;
             for (const hb of t.getHurtboxesWorld()) {
-                if (!ArrowProjectile.aabb(box, hb))
+                const hl = (_a = hb.layer) !== null && _a !== void 0 ? _a : CollisionLayer.SCAN;
+                if ((DEFAULT_HITBOX_LAYER_MASK & collisionLayerToBit(hl)) === 0)
+                    continue;
+                if (!FighterEntity.checkCollisionOverlap(projectileShape, hb))
                     continue;
                 this.struck.add(t);
-                const ix = (Math.max(box.x, hb.x) + Math.min(box.x + box.w, hb.x + hb.w)) / 2;
-                const iy = (Math.max(box.y, hb.y) + Math.min(box.y + box.h, hb.y + hb.h)) / 2;
+                const impact = FighterEntity.getCollisionImpactPoint(projectileShape, hb);
+                const ix = impact.x;
+                const iy = impact.y;
                 this.owner.applyStrikeAgainst(t, this.attackDef, ix, iy);
                 return false;
             }

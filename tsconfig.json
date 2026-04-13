@@ -10,6 +10,6 @@
     "allowJs": false,
     "noResolve": false
   },
-  "files": ["game.ts", "input_ai.ts", "engine.ts"],
+  "files": ["collision_config.ts", "game.ts", "input_ai.ts", "engine.ts"],
   "exclude": ["game.js", "**/*.js"]
 }
