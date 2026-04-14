@@ -132,7 +132,7 @@ class InputHandler {
         const fwd  = facingRight ? "R"  : "L";
         const dfwd = facingRight ? "DR" : "DL";
 
-        // Single-pass state machine (reading forward in time)
+        // Single-pass state machine
         let stage = 0; // 0=need D, 1=need Dfwd, 2=need Fwd
         for (const { direction: dir } of recent) {
             switch (stage) {
@@ -232,7 +232,7 @@ class AIController {
     // ── Decision sub-routines ────────────────────────────────────────────────
 
     private decideUnderThreat(self: FighterEntity, dist: number): AiDecision {
-        // If we can punish with a counter, do so (30% chance).
+        // If we can punish with a counter, do so (30% chance). // lol counters don't exist
         if (self.attackCooldown === 0 && dist > this.config.attackRange && Math.random() < 0.30)
             return AiDecision.ATTACK_LIGHT;
         // Otherwise: 60% chance to block, 40% to back away.
@@ -248,7 +248,7 @@ class AIController {
         if (canFinish && r < 0.40)        return AiDecision.FINISHER;
         if (r < 0.45)                     return AiDecision.ATTACK_LIGHT;
         if (r < 0.75)                     return AiDecision.ATTACK_HEAVY;
-        return AiDecision.RETREAT; // feint/spacing
+        return AiDecision.RETREAT; // feint/spacing/ maybe I should just use the attack range as a threshold for when to retreat
     }
 
     private decideMidRange(): AiDecision {
@@ -272,7 +272,7 @@ class AIController {
     calculateInput(self: FighterEntity, opponent: FighterEntity): InputState {
         const input = makeEmptyState();
 
-        // Stunned / mid-attack: return empty input.
+        // Stunned / mid-attack: return empty input. // this junk does nothing lowkey
         if (self.state === FighterState.STUNNED || self.state === FighterState.ATTACKING)
             return input;
 
@@ -285,7 +285,7 @@ class AIController {
 
         const opponentRight = this.isOpponentRight(self, opponent);
 
-        // Always face the opponent.
+        // Always face the opponent. 
         self.facingRight = opponentRight;
 
         switch (this.lastDecision) {
@@ -306,7 +306,8 @@ class AIController {
             case AiDecision.BLOCK:
                 input.down = true;
                 break;
-            case AiDecision.IDLE:          /* stand still */                              break;
+            case AiDecision.IDLE:          /* stand still */                              
+            break; // i just want to be able to stand still for a few frames
         }
 
         return input;
