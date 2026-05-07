@@ -79,6 +79,9 @@ class FightingGameEngine {
         this.aiController = new AIController();
         Object.values(CHARACTER_PREVIEW_PATHS).forEach(path => { if (path) spriteLoader.loadSprite(path); });
         spriteLoader.loadSprite(ARENA_SPRITESHEET_PATH);
+        spriteLoader.loadSprite(ARROW_PROJECTILE_SPRITE_PATH);
+        spriteLoader.loadSprite(THUNDER_PROJECTILE_SPRITE_PATH);
+        spriteLoader.loadSprite(THUNDER_HIT_SPRITE_PATH);
     }
 
     /** Scale canvas CSS size to fit the window; drawing stays at SCREEN_WIDTH × SCREEN_HEIGHT. */
@@ -110,6 +113,14 @@ class FightingGameEngine {
         const y = GROUND_Y - owner.height * 0.55;
         const tipX = owner.facingRight ? owner.x + owner.width * 0.9 : owner.x + owner.width * 0.1;
         const vx = owner.facingRight ? 12 : -12;
+        this.activeProjectiles.push(new ArrowProjectile(owner, def, tipX, y, vx));
+    }
+
+    private spawnThunder(owner: FighterEntity) {
+        const def = owner.currentAttackDef || owner.getAttackDefinition(AttackType.PUNCH_LIGHT);
+        const y = GROUND_Y - owner.height * 0.62;
+        const tipX = owner.facingRight ? owner.x + owner.width * 0.82 : owner.x + owner.width * 0.18;
+        const vx = owner.facingRight ? 11 : -11;
         this.activeProjectiles.push(new ArrowProjectile(owner, def, tipX, y, vx));
     }
 
@@ -812,8 +823,13 @@ class FightingGameEngine {
         }
         this.fighter1.update(this.player1Input.keys, this.fighter2, this.player1Input);
         this.fighter2.update(fighter2Input, this.fighter1, fighter2Handler);
-        if (this.fighter1.takePendingProjectileSpawn()) this.spawnArrow(this.fighter1);
-        if (this.fighter2.takePendingProjectileSpawn()) this.spawnArrow(this.fighter2);
+        const p1Projectile = this.fighter1.takePendingProjectileSpawn();
+        if (p1Projectile === "arrow") this.spawnArrow(this.fighter1);
+        else if (p1Projectile === "thunder") this.spawnThunder(this.fighter1);
+
+        const p2Projectile = this.fighter2.takePendingProjectileSpawn();
+        if (p2Projectile === "arrow") this.spawnArrow(this.fighter2);
+        else if (p2Projectile === "thunder") this.spawnThunder(this.fighter2);
         for (let i = this.activeProjectiles.length - 1; i >= 0; i--) {
             if (!this.activeProjectiles[i].update(this.fighter1, this.fighter2)) {
                 this.activeProjectiles.splice(i, 1);

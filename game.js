@@ -43,11 +43,19 @@ const STANDARD_FIGHTER_WIDTH = 280;
 const FPS = 60;
 /** Heavy attack is a bow shot (projectile) — no melee hitboxes on that move. */
 const RANGED_HEAVY_ATTACK_KEYS = new Set(["Huntress", "Huntress 2"]);
+const THUNDER_PROJECTILE_ATTACK_KEYS = new Set(["Evil Wizard 3"]);
 function usesBowHeavyAttack(spriteKey) {
     return RANGED_HEAVY_ATTACK_KEYS.has(spriteKey);
 }
+function usesThunderProjectileAttack(spriteKey) {
+    return THUNDER_PROJECTILE_ATTACK_KEYS.has(spriteKey);
+}
 /** Frame (1-based after startAttack) to release arrow; synced to bow draw animation. */
 const BOW_PROJECTILE_RELEASE_FRAME = 10;
+const ARROW_PROJECTILE_SPRITE_PATH = "New Piskel-1.png.png";
+const THUNDER_PROJECTILE_RELEASE_FRAME = 8;
+const THUNDER_PROJECTILE_SPRITE_PATH = "New Piskel-2.png.png";
+const THUNDER_HIT_SPRITE_PATH = "New Piskel-3.png.png";
 const FIXED_DELTA_TIME = 1 / 60; // timestep for updates
 // Modern Vector Color Palette ( no idea )
 const PALETTE = {
@@ -489,8 +497,8 @@ class FighterEntity {
         this.currentAttackDef = null;
         // One-hit-per-attack tracking
         this.alreadyHitTargets = new Set();
-        /** Set on bow release frame; engine consumes to spawn arrow. */
-        this.pendingProjectileSpawn = false;
+        /** Set on release frame; engine consumes to spawn projectile kind. */
+        this.pendingProjectileSpawn = null;
         // Visual effects
         this.hitEffects = [];
         this.animFrame = 0; // Animation frame counter
@@ -716,7 +724,12 @@ class FighterEntity {
             if (this.currentAttackType === AttackType.KICK_HEAVY &&
                 usesBowHeavyAttack(this.config.spriteKey) &&
                 this.frameTimer === BOW_PROJECTILE_RELEASE_FRAME) {
-                this.pendingProjectileSpawn = true;
+                this.pendingProjectileSpawn = "arrow";
+            }
+            if (this.currentAttackType !== null &&
+                usesThunderProjectileAttack(this.config.spriteKey) &&
+                this.frameTimer === THUNDER_PROJECTILE_RELEASE_FRAME) {
+                this.pendingProjectileSpawn = "thunder";
             }
             // Check collision every frame during active frames (new canonical system)
             if (this.currentAttackDef) {
@@ -950,12 +963,11 @@ class FighterEntity {
         }
         return frames;
     }
-    /** Engine reads once to spawn arrow; clears the flag. */
+    /** Engine reads once to spawn projectile; clears pending kind. */
     takePendingProjectileSpawn() {
-        if (!this.pendingProjectileSpawn)
-            return false;
-        this.pendingProjectileSpawn = false;
-        return true;
+        const pending = this.pendingProjectileSpawn;
+        this.pendingProjectileSpawn = null;
+        return pending;
     }
     startAttack(type) {
         this.state = FighterState.ATTACKING;
@@ -963,7 +975,7 @@ class FighterEntity {
         this.currentAttackType = type;
         this.currentAttackDef = this.getAttackDefinition(type);
         this.alreadyHitTargets.clear(); // Reset hit tracking
-        this.pendingProjectileSpawn = false;
+        this.pendingProjectileSpawn = null;
         this.animFrame = 0;
         console.log(`${this.config.name} used ${AttackType[type]}`);
         if (type === AttackType.FINISHER) {
@@ -1304,6 +1316,18 @@ class FighterEntity {
                 ctx.fillStyle = PALETTE.WHITE;
                 ctx.fillRect(effect.x - 1, effect.y - 1, 2, 2);
             }
+            else if (effect.thunder) {
+                const thunderSprite = spriteLoader.getSprite(THUNDER_HIT_SPRITE_PATH);
+                if (thunderSprite) {
+                    ctx.drawImage(thunderSprite, effect.x - 20, effect.y - 24, 40, 48);
+                }
+                else {
+                    ctx.fillStyle = "#8b5cf6";
+                    ctx.fillRect(effect.x - 4, effect.y - 12, 8, 24);
+                    ctx.fillStyle = "#c4b5fd";
+                    ctx.fillRect(effect.x - 2, effect.y - 8, 4, 16);
+                }
+            }
             else {
                 // Hit effect - red/yellow sparks
                 ctx.fillStyle = PALETTE.ACCENT_RED;
@@ -1425,6 +1449,9 @@ class ArrowProjectile {
                 const ix = impact.x;
                 const iy = impact.y;
                 this.owner.applyStrikeAgainst(t, this.attackDef, ix, iy);
+                if (this.owner.config.spriteKey === "Evil Wizard 3") {
+                    t.hitEffects.push({ x: ix, y: iy, life: 12, maxLife: 12, thunder: true });
+                }
                 return false;
             }
         }
@@ -1435,19 +1462,35 @@ class ArrowProjectile {
         ctx.translate(this.x, this.y);
         if (this.vx < 0)
             ctx.scale(-1, 1);
-        ctx.fillStyle = "#5c3d1e";
-        ctx.strokeStyle = PALETTE.OUTLINE;
-        ctx.lineWidth = 2;
-        ctx.fillRect(-22, -4, 30, 8);
-        ctx.strokeRect(-22, -4, 30, 8);
-        ctx.fillStyle = "#c8c8c8";
-        ctx.beginPath();
-        ctx.moveTo(8, -5);
-        ctx.lineTo(26, 0);
-        ctx.lineTo(8, 5);
-        ctx.closePath();
-        ctx.fill();
-        ctx.stroke();
+        const isThunder = this.owner.config.spriteKey === "Evil Wizard 3";
+        const spritePath = isThunder ? THUNDER_PROJECTILE_SPRITE_PATH : ARROW_PROJECTILE_SPRITE_PATH;
+        const sprite = spriteLoader.getSprite(spritePath);
+        if (sprite) {
+            ctx.drawImage(sprite, -24, -12, 48, 24);
+        }
+        else {
+            if (isThunder) {
+                ctx.fillStyle = "#8b5cf6";
+                ctx.fillRect(-12, -6, 24, 12);
+                ctx.fillStyle = "#ddd6fe";
+                ctx.fillRect(-6, -3, 12, 6);
+            }
+            else {
+                ctx.fillStyle = "#5c3d1e";
+                ctx.strokeStyle = PALETTE.OUTLINE;
+                ctx.lineWidth = 2;
+                ctx.fillRect(-22, -4, 30, 8);
+                ctx.strokeRect(-22, -4, 30, 8);
+                ctx.fillStyle = "#c8c8c8";
+                ctx.beginPath();
+                ctx.moveTo(8, -5);
+                ctx.lineTo(26, 0);
+                ctx.lineTo(8, 5);
+                ctx.closePath();
+                ctx.fill();
+                ctx.stroke();
+            }
+        }
         ctx.restore();
     }
 }
@@ -1552,7 +1595,7 @@ class InputHandler {
             return false;
         const fwd = facingRight ? "R" : "L";
         const dfwd = facingRight ? "DR" : "DL";
-        // Single-pass state machine (reading forward in time)
+        // Single-pass state machine
         let stage = 0; // 0=need D, 1=need Dfwd, 2=need Fwd
         for (const { direction: dir } of recent) {
             switch (stage) {
@@ -1635,7 +1678,7 @@ class AIController {
     }
     // ── Decision sub-routines ────────────────────────────────────────────────
     decideUnderThreat(self, dist) {
-        // If we can punish with a counter, do so (30% chance).
+        // If we can punish with a counter, do so (30% chance). // lol counters don't exist
         if (self.attackCooldown === 0 && dist > this.config.attackRange && Math.random() < 0.30)
             return 0 /* AiDecision.ATTACK_LIGHT */;
         // Otherwise: 60% chance to block, 40% to back away.
@@ -1652,7 +1695,7 @@ class AIController {
             return 0 /* AiDecision.ATTACK_LIGHT */;
         if (r < 0.75)
             return 1 /* AiDecision.ATTACK_HEAVY */;
-        return 4 /* AiDecision.RETREAT */; // feint/spacing
+        return 4 /* AiDecision.RETREAT */; // feint/spacing/ maybe I should just use the attack range as a threshold for when to retreat
     }
     decideMidRange() {
         return Math.random() < this.effectiveAggression
@@ -1673,7 +1716,7 @@ class AIController {
     // ── Public API ───────────────────────────────────────────────────────────
     calculateInput(self, opponent) {
         const input = makeEmptyState();
-        // Stunned / mid-attack: return empty input.
+        // Stunned / mid-attack: return empty input. // this junk does nothing lowkey
         if (self.state === FighterState.STUNNED || self.state === FighterState.ATTACKING)
             return input;
         this.frame++;
@@ -1683,7 +1726,7 @@ class AIController {
             this.lastDecision = this.chooseDecision(self, opponent);
         }
         const opponentRight = this.isOpponentRight(self, opponent);
-        // Always face the opponent.
+        // Always face the opponent. 
         self.facingRight = opponentRight;
         switch (this.lastDecision) {
             case 0 /* AiDecision.ATTACK_LIGHT */:
@@ -1712,7 +1755,8 @@ class AIController {
             case 5 /* AiDecision.BLOCK */:
                 input.down = true;
                 break;
-            case 6 /* AiDecision.IDLE */: /* stand still */ break;
+            case 6 /* AiDecision.IDLE */: /* stand still */
+                break; // i just want to be able to stand still for a few frames
         }
         return input;
     }
@@ -1794,6 +1838,9 @@ class FightingGameEngine {
         Object.values(CHARACTER_PREVIEW_PATHS).forEach(path => { if (path)
             spriteLoader.loadSprite(path); });
         spriteLoader.loadSprite(ARENA_SPRITESHEET_PATH);
+        spriteLoader.loadSprite(ARROW_PROJECTILE_SPRITE_PATH);
+        spriteLoader.loadSprite(THUNDER_PROJECTILE_SPRITE_PATH);
+        spriteLoader.loadSprite(THUNDER_HIT_SPRITE_PATH);
     }
     /** Scale canvas CSS size to fit the window; drawing stays at SCREEN_WIDTH × SCREEN_HEIGHT. */
     layoutCanvasToViewport() {
@@ -1821,6 +1868,13 @@ class FightingGameEngine {
         const y = GROUND_Y - owner.height * 0.55;
         const tipX = owner.facingRight ? owner.x + owner.width * 0.9 : owner.x + owner.width * 0.1;
         const vx = owner.facingRight ? 12 : -12;
+        this.activeProjectiles.push(new ArrowProjectile(owner, def, tipX, y, vx));
+    }
+    spawnThunder(owner) {
+        const def = owner.currentAttackDef || owner.getAttackDefinition(AttackType.PUNCH_LIGHT);
+        const y = GROUND_Y - owner.height * 0.62;
+        const tipX = owner.facingRight ? owner.x + owner.width * 0.82 : owner.x + owner.width * 0.18;
+        const vx = owner.facingRight ? 11 : -11;
         this.activeProjectiles.push(new ArrowProjectile(owner, def, tipX, y, vx));
     }
     startFight() {
@@ -2599,10 +2653,16 @@ class FightingGameEngine {
         }
         this.fighter1.update(this.player1Input.keys, this.fighter2, this.player1Input);
         this.fighter2.update(fighter2Input, this.fighter1, fighter2Handler);
-        if (this.fighter1.takePendingProjectileSpawn())
+        const p1Projectile = this.fighter1.takePendingProjectileSpawn();
+        if (p1Projectile === "arrow")
             this.spawnArrow(this.fighter1);
-        if (this.fighter2.takePendingProjectileSpawn())
+        else if (p1Projectile === "thunder")
+            this.spawnThunder(this.fighter1);
+        const p2Projectile = this.fighter2.takePendingProjectileSpawn();
+        if (p2Projectile === "arrow")
             this.spawnArrow(this.fighter2);
+        else if (p2Projectile === "thunder")
+            this.spawnThunder(this.fighter2);
         for (let i = this.activeProjectiles.length - 1; i >= 0; i--) {
             if (!this.activeProjectiles[i].update(this.fighter1, this.fighter2)) {
                 this.activeProjectiles.splice(i, 1);

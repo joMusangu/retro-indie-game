@@ -19,13 +19,22 @@ const FPS = 60;
 
 /** Heavy attack is a bow shot (projectile) — no melee hitboxes on that move. */
 const RANGED_HEAVY_ATTACK_KEYS = new Set<string>(["Huntress", "Huntress 2"]);
+const THUNDER_PROJECTILE_ATTACK_KEYS = new Set<string>(["Evil Wizard 3"]);
 
 function usesBowHeavyAttack(spriteKey: string): boolean {
     return RANGED_HEAVY_ATTACK_KEYS.has(spriteKey);
 }
 
+function usesThunderProjectileAttack(spriteKey: string): boolean {
+    return THUNDER_PROJECTILE_ATTACK_KEYS.has(spriteKey);
+}
+
 /** Frame (1-based after startAttack) to release arrow; synced to bow draw animation. */
 const BOW_PROJECTILE_RELEASE_FRAME = 10;
+const ARROW_PROJECTILE_SPRITE_PATH = "New Piskel-1.png.png";
+const THUNDER_PROJECTILE_RELEASE_FRAME = 8;
+const THUNDER_PROJECTILE_SPRITE_PATH = "New Piskel-2.png.png";
+const THUNDER_HIT_SPRITE_PATH = "New Piskel-3.png.png";
 const FIXED_DELTA_TIME = 1 / 60; // timestep for updates
 
 // Modern Vector Color Palette ( no idea )
@@ -488,7 +497,10 @@ interface HitEffect {
     life: number;
     maxLife: number;
     blocked?: boolean;
+    thunder?: boolean;
 }
+
+type ProjectileKind = "arrow" | "thunder";
 
 // --- Canonical Coordinate System & Collision Framework ---
 //
@@ -621,8 +633,8 @@ class FighterEntity {
     // One-hit-per-attack tracking
     alreadyHitTargets: Set<FighterEntity> = new Set();
 
-    /** Set on bow release frame; engine consumes to spawn arrow. */
-    pendingProjectileSpawn: boolean = false;
+    /** Set on release frame; engine consumes to spawn projectile kind. */
+    pendingProjectileSpawn: ProjectileKind | null = null;
 
     /** Fired when this fighter deals damage to the opponent via processHit (optional; used for AI). */
     onHitDealt?: () => void;
@@ -885,7 +897,13 @@ class FighterEntity {
             if (this.currentAttackType === AttackType.KICK_HEAVY &&
                 usesBowHeavyAttack(this.config.spriteKey) &&
                 this.frameTimer === BOW_PROJECTILE_RELEASE_FRAME) {
-                this.pendingProjectileSpawn = true;
+                this.pendingProjectileSpawn = "arrow";
+            }
+
+            if (this.currentAttackType !== null &&
+                usesThunderProjectileAttack(this.config.spriteKey) &&
+                this.frameTimer === THUNDER_PROJECTILE_RELEASE_FRAME) {
+                this.pendingProjectileSpawn = "thunder";
             }
             
             // Check collision every frame during active frames (new canonical system)
@@ -1134,11 +1152,11 @@ class FighterEntity {
         return frames;
     }
 
-    /** Engine reads once to spawn arrow; clears the flag. */
-    takePendingProjectileSpawn(): boolean {
-        if (!this.pendingProjectileSpawn) return false;
-        this.pendingProjectileSpawn = false;
-        return true;
+    /** Engine reads once to spawn projectile; clears pending kind. */
+    takePendingProjectileSpawn(): ProjectileKind | null {
+        const pending = this.pendingProjectileSpawn;
+        this.pendingProjectileSpawn = null;
+        return pending;
     }
 
     startAttack(type: AttackType) {
@@ -1147,7 +1165,7 @@ class FighterEntity {
         this.currentAttackType = type;
         this.currentAttackDef = this.getAttackDefinition(type);
         this.alreadyHitTargets.clear(); // Reset hit tracking
-        this.pendingProjectileSpawn = false;
+        this.pendingProjectileSpawn = null;
         this.animFrame = 0;
         console.log(`${this.config.name} used ${AttackType[type]}`);
 
@@ -1528,6 +1546,16 @@ class FighterEntity {
                 ctx.fillRect(effect.x - 3, effect.y - 3, 6, 6);
                 ctx.fillStyle = PALETTE.WHITE;
                 ctx.fillRect(effect.x - 1, effect.y - 1, 2, 2);
+            } else if (effect.thunder) {
+                const thunderSprite = spriteLoader.getSprite(THUNDER_HIT_SPRITE_PATH);
+                if (thunderSprite) {
+                    ctx.drawImage(thunderSprite, effect.x - 20, effect.y - 24, 40, 48);
+                } else {
+                    ctx.fillStyle = "#8b5cf6";
+                    ctx.fillRect(effect.x - 4, effect.y - 12, 8, 24);
+                    ctx.fillStyle = "#c4b5fd";
+                    ctx.fillRect(effect.x - 2, effect.y - 8, 4, 16);
+                }
             } else {
                 // Hit effect - red/yellow sparks
                 ctx.fillStyle = PALETTE.ACCENT_RED;
@@ -1657,6 +1685,9 @@ class ArrowProjectile {
                 const ix = impact.x;
                 const iy = impact.y;
                 this.owner.applyStrikeAgainst(t, this.attackDef, ix, iy);
+                if (this.owner.config.spriteKey === "Evil Wizard 3") {
+                    t.hitEffects.push({ x: ix, y: iy, life: 12, maxLife: 12, thunder: true });
+                }
                 return false;
             }
         }
@@ -1667,19 +1698,33 @@ class ArrowProjectile {
         ctx.save();
         ctx.translate(this.x, this.y);
         if (this.vx < 0) ctx.scale(-1, 1);
-        ctx.fillStyle = "#5c3d1e";
-        ctx.strokeStyle = PALETTE.OUTLINE;
-        ctx.lineWidth = 2;
-        ctx.fillRect(-22, -4, 30, 8);
-        ctx.strokeRect(-22, -4, 30, 8);
-        ctx.fillStyle = "#c8c8c8";
-        ctx.beginPath();
-        ctx.moveTo(8, -5);
-        ctx.lineTo(26, 0);
-        ctx.lineTo(8, 5);
-        ctx.closePath();
-        ctx.fill();
-        ctx.stroke();
+        const isThunder = this.owner.config.spriteKey === "Evil Wizard 3";
+        const spritePath = isThunder ? THUNDER_PROJECTILE_SPRITE_PATH : ARROW_PROJECTILE_SPRITE_PATH;
+        const sprite = spriteLoader.getSprite(spritePath);
+        if (sprite) {
+            ctx.drawImage(sprite, -24, -12, 48, 24);
+        } else {
+            if (isThunder) {
+                ctx.fillStyle = "#8b5cf6";
+                ctx.fillRect(-12, -6, 24, 12);
+                ctx.fillStyle = "#ddd6fe";
+                ctx.fillRect(-6, -3, 12, 6);
+            } else {
+                ctx.fillStyle = "#5c3d1e";
+                ctx.strokeStyle = PALETTE.OUTLINE;
+                ctx.lineWidth = 2;
+                ctx.fillRect(-22, -4, 30, 8);
+                ctx.strokeRect(-22, -4, 30, 8);
+                ctx.fillStyle = "#c8c8c8";
+                ctx.beginPath();
+                ctx.moveTo(8, -5);
+                ctx.lineTo(26, 0);
+                ctx.lineTo(8, 5);
+                ctx.closePath();
+                ctx.fill();
+                ctx.stroke();
+            }
+        }
         ctx.restore();
     }
 }
