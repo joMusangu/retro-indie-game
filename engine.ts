@@ -110,18 +110,16 @@ class FightingGameEngine {
             owner.currentAttackDef && owner.currentAttackDef.type === AttackType.KICK_HEAVY
                 ? owner.currentAttackDef
                 : owner.getAttackDefinition(AttackType.KICK_HEAVY);
-        const y = GROUND_Y - owner.height * 0.55;
-        const tipX = owner.facingRight ? owner.x + owner.width * 0.9 : owner.x + owner.width * 0.1;
+        const release = owner.getProjectileReleasePoint(0.58, 0.34);
         const vx = owner.facingRight ? 12 : -12;
-        this.activeProjectiles.push(new ArrowProjectile(owner, def, tipX, y, vx));
+        this.activeProjectiles.push(new ArrowProjectile(owner, def, release.x, release.y, vx));
     }
 
     private spawnThunder(owner: FighterEntity) {
         const def = owner.currentAttackDef || owner.getAttackDefinition(AttackType.PUNCH_LIGHT);
-        const y = GROUND_Y - owner.height * 0.62;
-        const tipX = owner.facingRight ? owner.x + owner.width * 0.82 : owner.x + owner.width * 0.18;
+        const release = owner.getProjectileReleasePoint(0.62, 0.30);
         const vx = owner.facingRight ? 11 : -11;
-        this.activeProjectiles.push(new ArrowProjectile(owner, def, tipX, y, vx));
+        this.activeProjectiles.push(new ArrowProjectile(owner, def, release.x, release.y, vx));
     }
 
     startFight() {

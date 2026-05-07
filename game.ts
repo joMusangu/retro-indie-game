@@ -1187,6 +1187,20 @@ class FighterEntity {
         return GROUND_Y + this.groundOffsetPx + baseToScreen(this.z);
     }
 
+    /**
+     * Bow/thunder projectile release anchor in world space.
+     * Uses the fighter's live feet line so release stays aligned with sprite offsets.
+     */
+    getProjectileReleasePoint(heightFactor = 0.58, forwardFactor = 0.34): { x: number; y: number } {
+        const feetY = this.getFeetWorldY();
+        const centerX = this.x + this.width / 2;
+        const forward = this.width * forwardFactor;
+        return {
+            x: this.facingRight ? centerX + forward : centerX - forward,
+            y: feetY - this.height * heightFactor,
+        };
+    }
+
     // Transform collision box from base coords (relative to feet pivot) to world coords (screen space)
     transformCollisionBox(box: CollisionBox): WorldCollisionShape {
         const pivotX = this.x + this.width / 2;
@@ -1655,8 +1669,8 @@ class ArrowProjectile {
         this.x = x;
         this.y = y;
         this.vx = vx;
-        this.w = 28;
-        this.h = 12;
+        this.w = 34;
+        this.h = 16;
         this.life = 96;
     }
 
